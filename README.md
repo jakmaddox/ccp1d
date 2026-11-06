@@ -76,12 +76,15 @@ electron emission at the electrodes is included with a configurable yield.
 ## Numerics
 
 **Scharfetter-Gummel flux discretisation.** Central differencing of a
-drift-diffusion flux goes unstable once the cell Peclet number exceeds two,
-which in a sheath happens immediately; naive upwinding is stable but smears the
-sheath edge across several cells. Scharfetter-Gummel exponential fitting
-interpolates between the two. In the drift-dominated sheath it reduces to
-upwinding, so the scheme is first order there, and the convergence study below
-confirms that.
+drift-diffusion flux goes unstable once the cell Peclet number exceeds two;
+naive upwinding is stable but smears the sheath edge across several cells.
+Scharfetter-Gummel exponential fitting interpolates between the two, and only
+the ions reach the upwind end. Their cell Peclet number peaks near 370 at the
+defaults and exceeds two on 64% of face evaluations, so ion transport is first
+order in the sheath. Electrons stay near the central end: the drift cap holds
+their cell Peclet number below 0.47 at 200 cells, and below 0.92 at 100. The
+first order in the convergence study below is consistent with the upwinded
+ions, but no test isolates them as its cause.
 
 The transport part of each density matrix is an M-matrix. The electron
 equation also puts ionisation on the diagonal, `-k_iz N`, which erodes
@@ -186,10 +189,10 @@ To confirm the suite can fail, bugs were planted one at a time:
 | electron secondary-emission sign flipped at one wall | energy balance, both symmetry tests, convergence |
 | elastic loss factor 3 changed to 2 | energy balance |
 | electron and ion ionisation sources mismatched by 1% | charge balance (reads exactly 1.0e-2) |
+| Poisson predictor started from the Gummel iterate, not the old charge | Gummel sweep check (ratio 2.03) |
 | energy transport factor 5/3 changed to 1 | **not caught** |
 
 The last row is a real gap. Interior fluxes telescope, so no global balance can
-| Poisson predictor started from the Gummel iterate, not the old charge | Gummel sweep check (ratio 2.03) |
 see a wrong transport coefficient, and the symmetry and order checks are
 indifferent to it. Closing it needs a manufactured-solution test of the
 transport operators.
@@ -213,7 +216,9 @@ is coincidence, not design, and it will not hold at other settings.
 ## Validity
 
 The drift-diffusion closure needs the electron mean free path to be short
-compared with the gradient scale. In a 20 mm gap:
+compared with the gradient scale. In a 20 mm gap, taking the thermal speed at
+the 1.57 V bulk temperature over the collision rate (0.59 mm at 1 Torr from the
+built-in mobility, 0.54 mm from the elastic rate fit):
 
 | pressure | mean free path | mfp / gap |
 | --- | --- | --- |

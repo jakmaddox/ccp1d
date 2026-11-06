@@ -17,9 +17,10 @@ namespace ccp {
 struct DischargeConfig {
     std::size_t num_cells = 200;
     double gap_length = 0.02;            // m, electrode separation
-    /// 1 Torr. Below roughly 300 mTorr in a 20 mm gap the electron mean free
-    /// path approaches the gap width and the drift-diffusion closure stops
-    /// being defensible -- see the validity note in the README.
+    /// 1 Torr. Below a few hundred mTorr in a 20 mm gap the drift cap sets
+    /// electron transport across most of the gap and the rate fits are far
+    /// outside their range, so the drift-diffusion closure stops being
+    /// defensible -- see the validity note in the README.
     double pressure_mtorr = 1000.0;
     double gas_temperature_k = 300.0;
 

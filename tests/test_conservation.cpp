@@ -252,10 +252,12 @@ double mean_density_at(std::size_t cells, int steps, int cycles) {
 void test_convergence_order() {
     std::cout << "\nObserved order of accuracy\n";
 
-    // Scharfetter-Gummel reduces to upwinding in a drift-dominated sheath and
-    // backward Euler is first order, so the expected order is 1 in both. The
-    // estimate is p = log2(|q1 - q0| / |q2 - q1|) on successive halvings.
-    // Measured 0.84 in space (100/200/400 cells) and 1.15 in time.
+    // Scharfetter-Gummel reduces to upwinding for the ions in the sheath, and
+    // backward Euler is first order, so the expected order is 1 in both.
+    // Electrons do not reach upwinding: the drift cap keeps their cell Peclet
+    // number below one here. The estimate is p = log2(|q1 - q0| / |q2 - q1|)
+    // on successive halvings. Measured 0.84 in space (100/200/400 cells) and
+    // 1.05 in time.
     constexpr int kCycles = 20;
     const double c1 = mean_density_at(100, 250, kCycles);
     const double c2 = mean_density_at(200, 250, kCycles);
