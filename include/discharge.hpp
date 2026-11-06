@@ -189,6 +189,7 @@ private:
     void compute_electron_fluxes();
     void compute_ion_fluxes();
     void compute_effective_permittivity();
+    void compute_rates();
     double wall_ion_flux_left() const;
     double wall_ion_flux_right() const;
     double mean_energy(std::size_t i) const;
@@ -229,6 +230,13 @@ private:
     // Semi-implicit Poisson: face permittivity eps0 + dt*sigma, and the
     // diffusive part of the conduction current that its right-hand side needs.
     std::vector<double> eps_face_, jdiff_face_, te_face_;
+
+    // Rate coefficients [m^3/s], frozen for the duration of one Gummel sweep.
+    // Evaluating them once per sweep, before any species moves, means the
+    // electron source, the ion source and the energy cost of ionisation all
+    // see the same k_iz, so ionisation creates electrons and ions in equal
+    // numbers and charges each event exactly once.
+    std::vector<double> kiz_, kex_, kel_;
 
     TridiagonalSolver matrix_;
 };

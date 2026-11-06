@@ -19,18 +19,18 @@ numerical guards are setting.
 ## Results
 
 1 Torr, 300 V, 13.56 MHz, 20 mm gap, 200 cells, 1000 steps per cycle, run for
-3000 RF cycles to a cycle-to-cycle drift of 7.6e-6 (`./build/ccp1d --cycles 3000`):
+3000 RF cycles to a cycle-to-cycle drift of 7.7e-6 (`./build/ccp1d --cycles 3000`):
 
 | quantity | value |
 | --- | --- |
 | mean electron density (gap and cycle average) | 1.04e16 m^-3 |
-| peak electron density | 2.80e16 m^-3 |
+| peak electron density | 2.81e16 m^-3 |
 | bulk electron temperature | 1.57 V |
-| peak mean electron energy (end of cycle / max over cycle) | 13.1 / 18.2 eV |
-| electron Joule power | 8.17e3 W m^-3 |
+| peak mean electron energy (end of cycle / max over cycle) | 13.0 / 18.1 eV |
+| electron Joule power | 8.21e3 W m^-3 |
 | ion Joule power | 1.12e4 W m^-3 |
 | total absorbed power | 1.94e4 W m^-3 |
-| electron drift cap duty | 27.7% of face evaluations |
+| electron drift cap duty | 27.6% of face evaluations |
 
 Two things about these numbers are easy to get wrong:
 
@@ -104,9 +104,16 @@ which preserves the tridiagonal structure and removes the restriction.
 
 It is not free. Gauss's law is enforced against a predicted charge density
 rather than the one the transport solves then produce, so the total current
-`J_cond + eps0 dE/dt` is not exactly uniform in x. The violation is about 10%
-at the default timestep and is first order in dt; `test_conservation` pins it
-to that scaling.
+`J_cond + eps0 dE/dt` is not exactly uniform in x. At the default timestep the
+violation averages 1.8% of the peak current over a cycle (3.9% worst) and it
+is first order in dt; `test_conservation` pins it to that scaling.
+
+The conductivity in `eps_eff` is built from the same limited drift the
+transport solve applies. Where the electron drift cap binds, the flux responds
+to the field with mobility `v_cap/|E|`, not `mu_e`; using the bare mobility
+there overstated sigma and enforced Gauss's law against a current the
+continuity equation never carried. Matching the two cut the continuity
+violation by 2.7x.
 
 `--explicit-poisson` restores the naive treatment, and the failure mode is worth
 seeing. It tracks the semi-implicit solution to four significant figures while
@@ -120,7 +127,13 @@ worth designing out rather than tuning around.
 in sequence, repeated a few times so the strongly nonlinear coupling between
 space charge and field is converged before the step is accepted. Three sweeps
 is converged: going to 6 or 12 changes the absorbed power by less than 0.02%.
-Each sub-solve is a tridiagonal system handled by the Thomas algorithm.
+Rate coefficients are evaluated once per sweep, before any species moves, so
+the electron source, the ion source and the energy cost of ionisation all see
+the same `k_iz`. Re-evaluating them between the electron and ion updates, as an
+earlier version did, created electrons and ions in slightly different numbers:
+a spurious net charge source of 8.6e-5 of the ionisation rate, now 5.0e-6 and
+vanishing with dt. Each sub-solve is a tridiagonal system handled by the
+Thomas algorithm.
 
 ## Verification
 
@@ -136,15 +149,21 @@ factor shows up as a broken balance instead of being reproduced by the check.
 | Poisson operator vs analytic parabola, observed order | 2.000 | 1.9 to 2.1 |
 | vacuum gap: linear potential, E = V/L on every face | roundoff | 1e-9 |
 | Bernoulli function vs long-double reference | roundoff | 1e-14 |
-| global electron energy balance over one cycle | 1.1e-4 of input | 1e-3 |
+| global electron energy balance over one cycle | 9.3e-5 of input | 1e-3 |
+| global charge balance: net charge vs net wall current | 5.0e-6 of production | 2.5e-5 |
 | undriven decay stays mirror-symmetric | 4.9e-14 | 1e-10 |
 | driven: n(x,t) vs n(L-x,t+T/2), relative to cycle drift | 1.4 | < 3 |
-| observed order in space / time | 0.84 / 1.15 | 0.6 to 1.4 |
-| current-continuity error, order in dt | 0.86 | 0.6 to 1.4 |
+| observed order in space / time | 0.84 / 0.91 | 0.6 to 1.4 |
+| current-continuity error, order in dt | 0.96 | 0.6 to 1.4 |
 
 The energy tolerance is set below the smallest physical term in the budget
 (secondary-electron energy, about 1.4e-3 of input) so that an error even there
-fails it. To confirm the suite can fail, six bugs were planted one at a time:
+fails it. The two residuals are not zero because the solver freezes rate
+coefficients for a Gummel sweep while the checks evaluate the end-of-step
+state; both vanish faster than dt (energy: 5.5e-4, 9.3e-5, 1.4e-5 at 500,
+1000, 2000 steps per cycle).
+
+To confirm the suite can fail, bugs were planted one at a time:
 
 | planted bug | caught by |
 | --- | --- |
@@ -153,11 +172,13 @@ fails it. To confirm the suite can fail, six bugs were planted one at a time:
 | Ohmic heating doubled | six checks |
 | electron secondary-emission sign flipped at one wall | energy balance, both symmetry tests, convergence |
 | elastic loss factor 3 changed to 2 | energy balance |
-| energy transport factor 5/3 changed to 1 | convergence test only |
+| electron and ion ionisation sources mismatched by 1% | charge balance (reads exactly 1.0e-2) |
+| energy transport factor 5/3 changed to 1 | **not caught** |
 
-The last row is a real limit. Interior fluxes telescope, so a global balance
-cannot see a wrong transport coefficient; it was caught incidentally, and a
-dedicated check would need a manufactured solution.
+The last row is a real gap. Interior fluxes telescope, so no global balance can
+see a wrong transport coefficient, and the symmetry and order checks are
+indifferent to it. Closing it needs a manufactured-solution test of the
+transport operators.
 
 `ccp1d_audit` measures the same things at any resolution, plus diagnostics
 that are not pass/fail. With `--convergence` it adds grid and timestep studies
@@ -168,10 +189,10 @@ with Richardson error estimates. At the defaults after 100 cycles
 | --- | --- | --- |
 | cells 100 / 200 / 400 | 0.87 | 200 cells reads 2.8% low |
 | cells 200 / 400 / 800 | 0.94 | 400 cells reads 1.4% low |
-| steps 250 / 500 / 1000 | 0.87 | 500 steps reads 1.5% high |
-| steps 500 / 1000 / 2000 | 0.94 | 1000 steps reads 0.75% high |
+| steps 250 / 500 / 1000 | 0.93 | 500 steps reads 1.7% high |
+| steps 500 / 1000 / 2000 | 0.98 | 1000 steps reads 0.85% high |
 
-So the default resolution carries about 3% spatial and 0.75% temporal error in
+So the default resolution carries about 3% spatial and 0.9% temporal error in
 the mean density, of opposite sign. The two partly cancel at the defaults; that
 is coincidence, not design, and it will not hold at other settings.
 
@@ -249,17 +270,14 @@ In rough order of value:
 1. Tabulated `mu(E/N)`, `D(E/N)` and rate coefficients from a Boltzmann solver,
    replacing the constant-mobility closure, its speed cap, and the extrapolated
    rate fits. The audit numbers above are the case for doing this first.
-2. Build the semi-implicit conductivity from the same limited drift the
-   transport solve uses. About two thirds of the current-continuity error comes
-   from that mismatch.
-3. A manufactured-solution test for the transport operators, which the global
-   balance cannot see.
-4. Metastable argon as a fourth species, which matters for the ionisation
+2. A manufactured-solution test for the transport operators, the one class of
+   error the current suite cannot see.
+3. Metastable argon as a fourth species, which matters for the ionisation
    balance well before anything below it does.
-5. Kokkos or CUDA offload of the flux assembly and tridiagonal solves. The
+4. Kokkos or CUDA offload of the flux assembly and tridiagonal solves. The
    assembly is embarrassingly parallel across faces; the tridiagonal solves need
    cyclic reduction rather than Thomas.
-6. MPI domain decomposition, for extension to 2D where the tridiagonal structure
+5. MPI domain decomposition, for extension to 2D where the tridiagonal structure
    is lost and a Krylov solve with a multigrid preconditioner is needed instead.
 
 ## References

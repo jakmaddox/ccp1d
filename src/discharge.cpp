@@ -48,6 +48,9 @@ DischargeSolver::DischargeSolver(DischargeConfig config)
       eps_face_(config.num_cells + 1, constants::kVacuumPermittivity),
       jdiff_face_(config.num_cells + 1, 0.0),
       te_face_(config.num_cells + 1, 0.0),
+      kiz_(config.num_cells, 0.0),
+      kex_(config.num_cells, 0.0),
+      kel_(config.num_cells, 0.0),
       matrix_(config.num_cells) {
     if (config.num_cells < 4) {
         throw std::invalid_argument("need at least 4 cells");
@@ -147,7 +150,21 @@ void DischargeSolver::compute_effective_permittivity() {
         const double ne_f = 0.5 * (ne_[left] + ne_[right]);
         const double ni_f = 0.5 * (ni_[left] + ni_[right]);
 
-        const double sigma = kE * (mu_i * ni_f + mue_face_[f] * ne_f);
+        // The conductivity must be the one the transport solve will actually
+        // apply. Where the drift limiter binds, the electron flux responds to
+        // the field with mobility cap/|E|, not mu_e; using the bare mobility
+        // there overstates sigma, so Gauss's law is enforced against a current
+        // the continuity equation never carries. The limiter state is taken
+        // from the current field iterate, which is the linearisation point.
+        const double e_mag = std::abs(efield_[f]);
+        const double e_cap = config_.drift_speed_limit_factor *
+                             ArgonGas::electron_thermal_speed(te_face_[f]);
+        const double mu_e_eff = (mue_face_[f] * e_mag > e_cap) ? e_cap / e_mag
+                                                               : mue_face_[f];
+        const double mu_i_eff = (mu_i * e_mag > ion_speed_cap_) ? ion_speed_cap_ / e_mag
+                                                                : mu_i;
+
+        const double sigma = kE * (mu_i_eff * ni_f + mu_e_eff * ne_f);
         eps_face_[f] = config_.semi_implicit_poisson ? kEps0 + dt_ * sigma : kEps0;
 
         // Diffusive conduction current, evaluated at the old densities. Only
@@ -246,6 +263,15 @@ void DischargeSolver::compute_electron_transport() {
     }
 }
 
+void DischargeSolver::compute_rates() {
+    for (std::size_t i = 0; i < grid_.num_cells(); ++i) {
+        const double te = temperature(i);
+        kiz_[i] = argon::ionisation_rate(te);
+        kex_[i] = argon::excitation_rate(te);
+        kel_[i] = argon::elastic_rate(te);
+    }
+}
+
 void DischargeSolver::compute_electron_fluxes() {
     const std::size_t n = grid_.num_cells();
     const double dx = grid_.dx();
@@ -325,7 +351,7 @@ void DischargeSolver::update_electrons() {
 
     matrix_.reset();
     for (std::size_t i = 0; i < n; ++i) {
-        const double kiz = argon::ionisation_rate(temperature(i));
+        const double kiz = kiz_[i];
 
         double diag = 1.0 / dt_;
         double rhs = ne_old_[i] / dt_;
@@ -378,7 +404,7 @@ void DischargeSolver::update_ions() {
 
     matrix_.reset();
     for (std::size_t i = 0; i < n; ++i) {
-        const double kiz = argon::ionisation_rate(temperature(i));
+        const double kiz = kiz_[i];
 
         double diag = 1.0 / dt_;
         // Ion production is proportional to n_e, not n_i, so it is an explicit
@@ -444,9 +470,9 @@ void DischargeSolver::update_energy() {
             -0.5 * (gamma_e_[i] * efield_[i] + gamma_e_[i + 1] * efield_[i + 1]);
 
         // Collisional losses, all proportional to n_e.
-        const double kiz = argon::ionisation_rate(te);
-        const double kex = argon::excitation_rate(te);
-        const double kel = argon::elastic_rate(te);
+        const double kiz = kiz_[i];
+        const double kex = kex_[i];
+        const double kel = kel_[i];
         const double inelastic = (kiz * argon::kIonisationThreshold +
                                   kex * argon::kExcitationThreshold) *
                                  ngas * ne;
@@ -515,6 +541,7 @@ void DischargeSolver::step(double time) {
 
     for (int sweep = 0; sweep < config_.gummel_iterations; ++sweep) {
         compute_electron_transport();
+        compute_rates();
         compute_effective_permittivity();
         solve_poisson(voltage);
         compute_field(voltage);

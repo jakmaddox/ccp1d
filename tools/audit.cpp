@@ -179,7 +179,7 @@ int main(int argc, char** argv) {
     const ccp::verify::CurrentContinuity cc =
         ccp::verify::current_continuity_over_cycle(solver, time);
     std::printf("\n=== TOTAL CURRENT CONTINUITY ===\n");
-    std::printf("  (max J - min J) / max |J|   mean %.3e   worst %.3e\n", cc.mean_spread,
+    std::printf("  (max J - min J) / cycle-max |J|   mean %.3e   worst %.3e\n", cc.mean_spread,
                 cc.worst_spread);
     std::printf("  (O(dt) by construction of the semi-implicit Poisson predictor)\n");
 

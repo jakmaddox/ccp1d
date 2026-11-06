@@ -148,7 +148,10 @@ inline double half_period_mirror_residual(DischargeSolver& solver, double& time)
 /// In 1D the conduction plus displacement current
 ///     J = e (Gamma_i - Gamma_e) + eps0 dE/dt
 /// must be independent of x. Returns the cycle mean and worst value of
-/// (max_x J - min_x J) / max_x |J|.
+/// (max_x J - min_x J), normalised by the largest |J| seen anywhere in the
+/// cycle. Normalising by the instantaneous |J| instead is misleading: near
+/// the RF current zero crossing the denominator is ~0.5% of its peak and a
+/// tiny absolute spread reads as an O(1) violation.
 struct CurrentContinuity {
     double mean_spread = 0.0;
     double worst_spread = 0.0;
@@ -161,7 +164,9 @@ inline CurrentContinuity current_continuity_over_cycle(DischargeSolver& solver,
     const int steps = solver.config().steps_per_cycle;
     const double dt = solver.timestep();
 
-    CurrentContinuity c;
+    std::vector<double> spreads;
+    spreads.reserve(static_cast<std::size_t>(steps));
+    double j_cycle_max = 0.0;
     std::vector<double> e_prev = solver.electric_field();
     for (int s = 0; s < steps; ++s) {
         solver.step(time);
@@ -171,19 +176,73 @@ inline CurrentContinuity current_continuity_over_cycle(DischargeSolver& solver,
         const auto& ef = solver.electric_field();
         double jmin = 1.0e300;
         double jmax = -1.0e300;
-        double jabs = 0.0;
         for (std::size_t f = 0; f < ef.size(); ++f) {
             const double j = kE * (gi[f] - ge[f]) + kEps0 * (ef[f] - e_prev[f]) / dt;
             jmin = std::min(jmin, j);
             jmax = std::max(jmax, j);
-            jabs = std::max(jabs, std::abs(j));
+            j_cycle_max = std::max(j_cycle_max, std::abs(j));
         }
-        const double spread = (jmax - jmin) / std::max(1.0e-300, jabs);
-        c.mean_spread += spread;
-        c.worst_spread = std::max(c.worst_spread, spread);
+        spreads.push_back(jmax - jmin);
         e_prev = ef;
     }
+
+    CurrentContinuity c;
+    const double norm = std::max(1.0e-300, j_cycle_max);
+    for (double spread : spreads) {
+        c.mean_spread += spread / norm;
+        c.worst_spread = std::max(c.worst_spread, spread / norm);
+    }
     c.mean_spread /= static_cast<double>(steps);
+    return c;
+}
+
+/// Global charge balance over one RF cycle.
+///
+/// Ionisation creates electrons and ions in pairs, so whatever the rate
+/// coefficients are, the net charge in the gap can only change through the
+/// net particle current into the electrodes:
+///     d/dt sum (n_i - n_e) dx = -(Gamma_i[N] - Gamma_i[0]) + (Gamma_e[N] - Gamma_e[0])
+/// Interior fluxes telescope, so this is independent of the transport
+/// discretisation and isolates the sources and the wall fluxes. `relative` is
+/// the imbalance divided by the gross ion production over the cycle, which is
+/// the scale an electron/ion source mismatch would show up against.
+struct ChargeBalance {
+    double imbalance = 0.0;   // m^-2 over the cycle
+    double production = 0.0;  // m^-2 over the cycle
+    double relative = 0.0;
+};
+
+inline ChargeBalance charge_balance_over_cycle(DischargeSolver& solver, double& time) {
+    const int steps = solver.config().steps_per_cycle;
+    const double dt = solver.timestep();
+    const double dx = solver.grid().dx();
+    const double ngas = solver.gas().number_density();
+    const std::size_t n = solver.grid().num_cells();
+
+    auto net = [&]() {
+        double q = 0.0;
+        for (std::size_t i = 0; i < n; ++i)
+            q += (solver.ion_density()[i] - solver.electron_density()[i]) * dx;
+        return q;
+    };
+
+    ChargeBalance c;
+    const double q0 = net();
+    double wall = 0.0;
+    for (int s = 0; s < steps; ++s) {
+        solver.step(time);
+        time += dt;
+        const auto& ge = solver.electron_flux();
+        const auto& gi = solver.ion_flux();
+        wall += (-(gi[n] - gi[0]) + (ge[n] - ge[0])) * dt;
+        for (std::size_t i = 0; i < n; ++i) {
+            const double te = (2.0 / 3.0) * solver.mean_energy_at(i);
+            c.production += argon::ionisation_rate(te) * ngas *
+                            solver.electron_density()[i] * dx * dt;
+        }
+    }
+    c.imbalance = (net() - q0) - wall;
+    c.relative = std::abs(c.imbalance) / std::max(1.0e-300, c.production);
     return c;
 }
 

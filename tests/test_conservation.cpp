@@ -57,10 +57,18 @@ void test_energy_balance() {
     std::cout << "\nGlobal electron energy balance\n";
 
     // Ohmic + secondary = inelastic + elastic + wall + d/dt(stored), measured
-    // over one cycle after 30. Measured residual 4.9e-5 of input. The smallest
-    // physical term, secondary-electron energy, is 1.4e-3 of input, so 1e-3
-    // is tight enough that a sign error even there fails the test.
-    ccp::DischargeSolver solver(test_config());
+    // over one cycle after 30. The smallest physical term, secondary-electron
+    // energy, is 1.4e-3 of input, so 1e-3 is tight enough that a sign error
+    // even there fails the test.
+    //
+    // The residual is not zero because the solver freezes rate coefficients
+    // for a Gummel sweep while this check evaluates losses at the end-of-step
+    // state. That lag vanishes faster than dt: measured 5.5e-4, 9.3e-5 and
+    // 1.4e-5 of input at 500, 1000 and 2000 steps per cycle. The test runs at
+    // 1000 to keep a tenfold margin under the tolerance.
+    ccp::DischargeConfig config = test_config();
+    config.steps_per_cycle = 1000;
+    ccp::DischargeSolver solver(config);
     double time = 0.0;
     ccp::verify::advance_cycles(solver, time, 30);
     const ccp::verify::EnergyBudget b =
@@ -75,6 +83,25 @@ void test_energy_balance() {
     check(b.inelastic > 0.8 * b.ohmic,
           "threshold losses dominate the sink at 1 Torr",
           "inelastic/Ohmic " + fix(b.inelastic / b.ohmic));
+}
+
+void test_charge_balance() {
+    std::cout << "\nGlobal charge balance\n";
+
+    // Ionisation makes electron-ion pairs, so the net charge in the gap can
+    // change only through the net wall current, independent of k_iz. This is
+    // the check on the species sources: a 1% electron/ion production mismatch
+    // reads exactly 1.0e-2 here. Measured 5.0e-6 of gross production at 1000
+    // steps per cycle; before the rate coefficients were frozen per Gummel
+    // sweep it was 8.6e-5, which this tolerance rejects.
+    ccp::DischargeConfig config = test_config();
+    config.steps_per_cycle = 1000;
+    ccp::DischargeSolver solver(config);
+    double time = 0.0;
+    ccp::verify::advance_cycles(solver, time, 30);
+    const ccp::verify::ChargeBalance q = ccp::verify::charge_balance_over_cycle(solver, time);
+    check(q.relative < 2.5e-5, "net charge changes only by the net wall current",
+          "imbalance " + sci(q.relative) + " of ion production");
 }
 
 void test_undriven_symmetry() {
@@ -218,6 +245,7 @@ int main() {
     std::cout << "ccp1d conservation and symmetry tests\n";
 
     test_energy_balance();
+    test_charge_balance();
     test_undriven_symmetry();
     test_driven_symmetry();
     test_convergence_order();
