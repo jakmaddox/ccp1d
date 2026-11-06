@@ -1,0 +1,11 @@
+build/
+cmake-build-*/
+*.o
+*.a
+profiles.csv
+*.csv
+!docs/*.csv
+__pycache__/
+.vscode/
+.idea/
+.DS_Store

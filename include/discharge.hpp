@@ -40,15 +40,22 @@ struct DischargeConfig {
     /// density collapses toward the floor while the energy density decays more
     /// slowly, so the ratio n_eps/n_e can run away numerically even though no
     /// real electron population is at that energy. The ceiling bounds that
-    /// ratio; it is a numerical guard, not a physical statement.
+    /// ratio; it is a numerical guard, not a physical statement. It has not
+    /// been seen to bind at 100 mTorr or 1 Torr (peak ~20 eV); compare with
+    /// CycleDiagnostics::peak_mean_energy_in_cycle.
     double mean_energy_ceiling = 60.0;   // eV
 
-    /// Constant-mobility drift-diffusion has no high-field saturation, so a
-    /// 200 V sheath would drive electrons to a sizeable fraction of c. Real
-    /// codes solve this with an E/N-dependent mobility table from a Boltzmann
-    /// solver; lacking one, the drift speed is capped at this multiple of the
-    /// local electron thermal speed, which is where the fluid closure fails
-    /// anyway.
+    /// Constant-mobility drift-diffusion has no high-field saturation, so in
+    /// the sheath mu_e E reaches several times the electron thermal speed
+    /// (about 5x at the defaults, ~1e7 m/s). Real codes take an E/N-dependent
+    /// mobility from a Boltzmann solver; lacking one, the drift speed is
+    /// capped at this multiple of the local thermal speed, which is where the
+    /// fluid closure fails anyway.
+    ///
+    /// This is not a passive guard. At the defaults it binds on about 28% of
+    /// interior faces over a cycle and removing it changes the absorbed power
+    /// by roughly 25%, so the capped region is modelled as free-streaming at
+    /// v_th. CycleDiagnostics::drift_cap_duty reports how much it is doing.
     double drift_speed_limit_factor = 1.0;
 
     /// Use the semi-implicit Poisson formulation, which folds the plasma
@@ -57,19 +64,49 @@ struct DischargeConfig {
     bool semi_implicit_poisson = true;
 };
 
-/// Cycle-averaged quantities, accumulated over the final RF period.
+/// Diagnostics from the final RF period.
+///
+/// Note which fields are cycle-averaged and which are instantaneous: the
+/// `peak_*_density` values and `peak_mean_energy` are read off the state at
+/// the end of the last step, while the power, ionisation rate and
+/// `mean_electron_density` are averaged over the cycle. The three are
+/// different numbers and were previously reported under one heading.
 struct CycleDiagnostics {
-    double peak_electron_density = 0.0;   // m^-3
-    double peak_ion_density = 0.0;        // m^-3
-    double mean_electron_density = 0.0;   // m^-3
-    double peak_mean_energy = 0.0;        // eV
-    double absorbed_power_density = 0.0;  // W/m^3, gap-averaged
+    double peak_electron_density = 0.0;   // m^-3, end-of-cycle snapshot
+    double peak_ion_density = 0.0;        // m^-3, end-of-cycle snapshot
+    double mean_electron_density = 0.0;   // m^-3, cycle- and gap-averaged
+    double peak_mean_energy = 0.0;        // eV, end-of-cycle snapshot
+
+    /// Largest local mean energy seen at any point during the cycle. This is
+    /// the number to compare against `mean_energy_ceiling`: the end-of-cycle
+    /// snapshot can sit well below a ceiling that binds mid-cycle.
+    double peak_mean_energy_in_cycle = 0.0;  // eV
+
+    /// Joule heating, gap-averaged over the cycle. The electron term is the
+    /// one that drives the energy equation; the ion term is comparable in
+    /// magnitude at these pressures and belongs in any statement about the
+    /// power the discharge absorbs.
+    double electron_power_density = 0.0;  // W/m^3
+    double ion_power_density = 0.0;       // W/m^3
+    double total_power_density = 0.0;     // W/m^3
+
     double ionisation_rate = 0.0;         // m^-3 s^-1, gap-averaged
+
+    /// Fraction of interior-face drift evaluations over the cycle at which
+    /// |mu_e E| exceeded the cap and the limiter was active. A non-trivial
+    /// value means the electron drift in those cells is set by the cap and
+    /// not by the mobility model: see the validity note in the README.
+    double drift_cap_duty = 0.0;
+
+    /// Largest |mu_e E| / v_cap ratio seen over the cycle. 1.0 means the cap
+    /// was just touched; larger means it was actively binding.
+    double drift_cap_max_ratio = 0.0;
 
     /// Relative change in gap-averaged electron density over the last RF
     /// cycle. The discharge is in periodic steady state when this approaches
     /// zero; it decays slowly because the equilibration timescale is set by
-    /// ion transit, which is many RF periods.
+    /// ambipolar ion transport across the gap, which is a few thousand RF
+    /// periods at the default settings.
     double cycle_drift = 0.0;
     int cycles_completed = 0;
 };
@@ -108,8 +145,33 @@ public:
     const std::vector<double>& potential() const noexcept { return phi_; }
     const std::vector<double>& electric_field() const noexcept { return efield_; }
 
+    /// Electron energy density [eV m^-3], cell-centred.
+    const std::vector<double>& energy_density() const noexcept { return neps_; }
+
+    /// Face-centred particle fluxes [m^-2 s^-1] as of the end of the last
+    /// step. Faces 0 and N carry the wall fluxes, secondary emission included.
+    const std::vector<double>& electron_flux() const noexcept { return gamma_e_; }
+    const std::vector<double>& ion_flux() const noexcept { return gamma_i_; }
+
+    const DischargeConfig& config() const noexcept { return config_; }
+    const ArgonGas& gas() const noexcept { return gas_; }
+
     /// Local electron temperature in volts, cell by cell.
     std::vector<double> electron_temperature() const;
+
+    /// Local mean electron energy in eV for cell i, floor and ceiling applied.
+    double mean_energy_at(std::size_t i) const { return mean_energy(i); }
+
+    /// Replace the state with a uniform fill. The constructor's cosine seed is
+    /// one reasonable initial condition; this is another, and it is the one an
+    /// analytic verification of the Poisson operator needs.
+    void seed_uniform(double ne, double ni, double mean_energy_ev);
+
+    /// Solve the field for the current state without advancing any species,
+    /// with the plain (eps0) Poisson operator rather than the semi-implicit
+    /// one. This is what lets the discrete Laplacian and the half-cell
+    /// Dirichlet elimination be checked against a known charge distribution.
+    void solve_field_explicit(double applied_voltage);
 
     /// Write cell-centred profiles to a CSV file.
     void write_profiles(const std::string& path) const;

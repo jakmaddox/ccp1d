@@ -48,6 +48,18 @@ void test_bernoulli() {
         check_close(residual, 0.0, 1e-10, "B(-x) - B(x) = x at x = " + std::to_string(x));
     }
 
+    // The identity above is blind to the even part of B: B(-x) - B(x) cancels
+    // every even-order Taylor term, so a wrong x^2 coefficient in the series
+    // branch would still pass it to 1e-17. Check absolute accuracy against a
+    // long-double reference on both sides of the branch point instead.
+    for (double x : {1e-6, -1e-6, 5e-5, -5e-5, 9.9e-5, -9.9e-5, 1.1e-4, 1e-2, 1.0, 10.0}) {
+        const long double lx = static_cast<long double>(x);
+        const double reference = static_cast<double>(lx / std::expm1l(lx));
+        const double rel = std::abs(ccp::bernoulli(x) - reference) / reference;
+        check(rel < 1e-14, "B(x) matches a long-double reference at x = " +
+                               std::to_string(x));
+    }
+
     check(ccp::bernoulli(1e4) >= 0.0 && ccp::bernoulli(1e4) < 1e-300,
           "B(x) underflows smoothly to zero for large positive x");
     check_close(ccp::bernoulli(-1e4), 1e4, 1e-12, "B(x) -> -x for large negative x");
@@ -130,28 +142,73 @@ void test_scharfetter_gummel_limits() {
 void test_poisson_operator() {
     std::cout << "\nPoisson solve\n";
 
-    // A uniform net charge between grounded electrodes gives a parabola.
-    // Build a solver, overwrite the state with a uniform imbalance, and check
-    // the potential against rho * x * (L - x) / (2 eps0).
-    ccp::DischargeConfig config;
-    config.num_cells = 400;
-    config.gap_length = 0.02;
-    config.num_cycles = 0;
-    ccp::DischargeSolver solver(config);
+    constexpr double kE = ccp::constants::kElementaryCharge;
+    constexpr double kEps0 = ccp::constants::kVacuumPermittivity;
+    constexpr double kLength = 0.02;
+    constexpr double kIons = 1.0e14;
 
-    // Run zero cycles, then inspect the seeded Poisson solve directly via one
-    // step at zero applied voltage. The seed plasma is quasineutral, so first
-    // confirm the trivial case.
-    solver.step(0.0);
-    const std::vector<double>& phi = solver.potential();
-    double max_abs = 0.0;
-    for (double value : phi) max_abs = std::max(max_abs, std::abs(value));
-    check(max_abs < 5.0,
-          "quasineutral seed plasma produces only a small self-consistent potential");
+    // A uniform net charge between grounded electrodes gives the parabola
+    //     phi(x) = rho x (L - x) / (2 eps0).
+    // The interior stencil is exact for a quadratic; the half-cell ghost
+    // elimination at the electrodes is not, so the error should be O(dx^2)
+    // and fall by four on each halving.
+    auto parabola_error = [&](std::size_t cells) {
+        ccp::DischargeConfig config;
+        config.num_cells = cells;
+        config.gap_length = kLength;
+        ccp::DischargeSolver solver(config);
+        solver.seed_uniform(0.0, kIons, 1.0);
+        solver.solve_field_explicit(0.0);
 
-    check(static_cast<int>(solver.electric_field().size()) ==
-              static_cast<int>(config.num_cells) + 1,
-          "electric field is defined on faces");
+        const double rho = kE * kIons;
+        double err = 0.0;
+        double peak = 0.0;
+        for (std::size_t i = 0; i < cells; ++i) {
+            const double x = solver.grid().cell_centre(i);
+            const double exact = rho * x * (kLength - x) / (2.0 * kEps0);
+            err = std::max(err, std::abs(solver.potential()[i] - exact));
+            peak = std::max(peak, exact);
+        }
+        return err / peak;
+    };
+    const double e100 = parabola_error(100);
+    const double e200 = parabola_error(200);
+    const double e400 = parabola_error(400);
+    check(e400 < 1.0e-5, "uniform charge reproduces the analytic parabola");
+    const double order = std::log2(e200 / e400);
+    check(order > 1.9 && order < 2.1,
+          "Poisson error is second order in dx (p = " + std::to_string(order) + ")");
+    check(e100 > e200 && e200 > e400, "Poisson error falls monotonically with dx");
+
+    // Charge-free gap with the powered electrode at V: the potential is
+    // linear, which the ghost elimination represents exactly, and the field
+    // must be uniform at -V/L on every face, the two wall faces included.
+    // This pins the sign and the half-cell spacing of the wall-face field.
+    {
+        ccp::DischargeConfig config;
+        config.num_cells = 64;
+        config.gap_length = kLength;
+        ccp::DischargeSolver solver(config);
+        solver.seed_uniform(0.0, 0.0, 1.0);
+        constexpr double kVolts = 100.0;
+        solver.solve_field_explicit(kVolts);
+
+        double phi_err = 0.0;
+        for (std::size_t i = 0; i < config.num_cells; ++i) {
+            const double x = solver.grid().cell_centre(i);
+            phi_err = std::max(phi_err, std::abs(solver.potential()[i] -
+                                                 kVolts * (1.0 - x / kLength)));
+        }
+        double e_err = 0.0;
+        for (double e : solver.electric_field())
+            e_err = std::max(e_err, std::abs(e - kVolts / kLength));
+        check(phi_err < 1e-9 * kVolts, "vacuum gap gives a linear potential");
+        check(e_err < 1e-9 * kVolts / kLength,
+              "vacuum gap gives E = V/L on every face, walls included");
+        check(static_cast<int>(solver.electric_field().size()) ==
+                  static_cast<int>(config.num_cells) + 1,
+              "electric field is defined on faces");
+    }
 }
 
 void test_gas_properties() {

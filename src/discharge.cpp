@@ -22,7 +22,15 @@ DischargeSolver::DischargeSolver(DischargeConfig config)
       gas_(config.pressure_mtorr, config.gas_temperature_k),
       dt_(1.0 / (config.rf_frequency * static_cast<double>(config.steps_per_cycle))),
       omega_(2.0 * constants::kPi * config.rf_frequency),
-      ion_speed_cap_(std::sqrt(2.0 * kE * config.rf_voltage / argon::kMass)),
+      // Free fall through the largest potential difference in the gap. With
+      // no drive that is the afterglow plasma potential, a few Te, so the
+      // ionisation potential is a safe upper bound. Without the floor a zero
+      // amplitude sets the cap to zero and silently freezes ion drift; without
+      // the abs a negative amplitude makes it NaN.
+      ion_speed_cap_(std::sqrt(2.0 * kE *
+                               std::max(std::abs(config.rf_voltage),
+                                        argon::kIonisationThreshold) /
+                               argon::kMass)),
       ne_(config.num_cells, 0.0),
       ni_(config.num_cells, 0.0),
       neps_(config.num_cells, 0.0),
@@ -82,6 +90,27 @@ std::vector<double> DischargeSolver::electron_temperature() const {
     std::vector<double> te(grid_.num_cells());
     for (std::size_t i = 0; i < te.size(); ++i) te[i] = temperature(i);
     return te;
+}
+
+void DischargeSolver::seed_uniform(double ne, double ni, double mean_energy_ev) {
+    std::fill(ne_.begin(), ne_.end(), ne);
+    std::fill(ni_.begin(), ni_.end(), ni);
+    std::fill(neps_.begin(), neps_.end(), ne * mean_energy_ev);
+    ne_old_ = ne_;
+    ni_old_ = ni_;
+    neps_old_ = neps_;
+}
+
+void DischargeSolver::solve_field_explicit(double applied_voltage) {
+    compute_electron_transport();
+    std::fill(eps_face_.begin(), eps_face_.end(), kEps0);
+    std::fill(jdiff_face_.begin(), jdiff_face_.end(), 0.0);
+
+    const bool saved = config_.semi_implicit_poisson;
+    config_.semi_implicit_poisson = false;
+    solve_poisson(applied_voltage);
+    compute_field(applied_voltage);
+    config_.semi_implicit_poisson = saved;
 }
 
 // ---------------------------------------------------------------------------
@@ -519,31 +548,56 @@ CycleDiagnostics DischargeSolver::run(bool verbose) {
                   << "  Poisson       "
                   << (config_.semi_implicit_poisson ? "semi-implicit" : "explicit charge")
                   << "\n\n"
-                  << "  cycle    mean n_e (m^-3)    peak eps (eV)"
-                  << "    power (W/m^3)    drift/cycle\n";
+                  << "  cycle    mean n_e (m^-3)   peak eps (eV)   P_e (W/m^3)"
+                  << "   P_tot (W/m^3)   cap duty   drift/cycle\n";
     }
 
     for (int cycle = 0; cycle < config_.num_cycles; ++cycle) {
-        double power_accum = 0.0;
+        double pe_accum = 0.0;
+        double pi_accum = 0.0;
         double ionisation_accum = 0.0;
         double ne_accum = 0.0;
+        double peak_eps_cycle = 0.0;
+        double cap_ratio_max = 0.0;
+        long long cap_hits = 0;
+        long long cap_evals = 0;
 
         for (int s = 0; s < steps; ++s) {
             step(time);
             time += dt_;
 
-            double power = 0.0;
+            double pe = 0.0;
+            double pi = 0.0;
             double ionisation = 0.0;
             double ne_sum = 0.0;
             for (std::size_t i = 0; i < n; ++i) {
-                power += -0.5 * (gamma_e_[i] * efield_[i] +
-                                 gamma_e_[i + 1] * efield_[i + 1]);
+                // Cell-averaged Joule heating from the two bounding faces.
+                // Electrons drift against E, so -Gamma_e.E is the work done
+                // on them; ions drift along E, so +Gamma_i.E.
+                pe += -0.5 * (gamma_e_[i] * efield_[i] + gamma_e_[i + 1] * efield_[i + 1]);
+                pi += 0.5 * (gamma_i_[i] * efield_[i] + gamma_i_[i + 1] * efield_[i + 1]);
                 ionisation += argon::ionisation_rate(temperature(i)) * ngas * ne_[i];
                 ne_sum += ne_[i];
+
+                // Unclamped ratio: reaching the ceiling means the ceiling bound.
+                const double raw = neps_[i] / std::max(ne_[i], config_.density_floor);
+                peak_eps_cycle = std::max(peak_eps_cycle, raw);
             }
-            power_accum += power * inv_cells;
+            pe_accum += pe * inv_cells;
+            pi_accum += pi * inv_cells;
             ionisation_accum += ionisation * inv_cells;
             ne_accum += ne_sum * inv_cells;
+
+            // Drift-cap activity on interior faces, against the end-of-step
+            // field and the face temperatures the transport solve used.
+            for (std::size_t f = 1; f < n; ++f) {
+                const double cap = config_.drift_speed_limit_factor *
+                                   ArgonGas::electron_thermal_speed(te_face_[f]);
+                const double ratio = std::abs(mue_face_[f] * efield_[f]) / cap;
+                cap_ratio_max = std::max(cap_ratio_max, ratio);
+                if (ratio > 1.0) ++cap_hits;
+                ++cap_evals;
+            }
         }
 
         const double mean_ne = ne_accum * inv_steps;
@@ -553,6 +607,12 @@ CycleDiagnostics DischargeSolver::run(bool verbose) {
                 : 1.0;
         previous_mean_ne = mean_ne;
 
+        const double p_e = pe_accum * inv_steps * kE;
+        const double p_i = pi_accum * inv_steps * kE;
+        const double duty = cap_evals > 0 ? static_cast<double>(cap_hits) /
+                                                static_cast<double>(cap_evals)
+                                          : 0.0;
+
         double peak_eps = 0.0;
         for (std::size_t i = 0; i < n; ++i)
             peak_eps = std::max(peak_eps, mean_energy(i));
@@ -561,19 +621,26 @@ CycleDiagnostics DischargeSolver::run(bool verbose) {
         if (verbose && (cycle % 20 == 0 || final_cycle)) {
             std::cout << "  " << std::setw(5) << cycle << "    " << std::scientific
                       << std::setprecision(4) << mean_ne << "        " << std::fixed
-                      << std::setprecision(2) << std::setw(6) << peak_eps << "       "
-                      << std::scientific << std::setprecision(3)
-                      << power_accum * inv_steps * kE << "      " << drift << "\n";
+                      << std::setprecision(2) << std::setw(6) << peak_eps << "      "
+                      << std::scientific << std::setprecision(3) << p_e << "     "
+                      << p_e + p_i << "      " << std::fixed << std::setprecision(3)
+                      << duty << "      " << std::scientific << std::setprecision(3)
+                      << drift << "\n";
         }
 
         if (final_cycle) {
-            diagnostics.absorbed_power_density = power_accum * inv_steps * kE;
+            diagnostics.electron_power_density = p_e;
+            diagnostics.ion_power_density = p_i;
+            diagnostics.total_power_density = p_e + p_i;
             diagnostics.ionisation_rate = ionisation_accum * inv_steps;
             diagnostics.mean_electron_density = mean_ne;
             diagnostics.peak_electron_density =
                 *std::max_element(ne_.begin(), ne_.end());
             diagnostics.peak_ion_density = *std::max_element(ni_.begin(), ni_.end());
             diagnostics.peak_mean_energy = peak_eps;
+            diagnostics.peak_mean_energy_in_cycle = peak_eps_cycle;
+            diagnostics.drift_cap_duty = duty;
+            diagnostics.drift_cap_max_ratio = cap_ratio_max;
             diagnostics.cycle_drift = drift;
             diagnostics.cycles_completed = cycle + 1;
         }
