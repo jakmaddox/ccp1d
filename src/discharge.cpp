@@ -558,6 +558,21 @@ void DischargeSolver::step(double time) {
     compute_ion_fluxes();
 }
 
+void DischargeSolver::require_finite(int cycle) const {
+    auto check = [&](const std::vector<double>& field, const char* name) {
+        const auto bad = std::find_if(field.begin(), field.end(),
+                                      [](double value) { return !std::isfinite(value); });
+        if (bad == field.end()) return;
+        throw std::runtime_error("solution diverged in cycle " + std::to_string(cycle) +
+                                 ": " + name + " is not finite at cell " +
+                                 std::to_string(bad - field.begin()));
+    };
+    check(ne_, "n_e");
+    check(ni_, "n_i");
+    check(neps_, "n_eps");
+    check(phi_, "the potential");
+}
+
 CycleDiagnostics DischargeSolver::run(bool verbose) {
     const std::size_t n = grid_.num_cells();
     const double dx = grid_.dx();
@@ -636,6 +651,8 @@ CycleDiagnostics DischargeSolver::run(bool verbose) {
                 ++cap_evals;
             }
         }
+
+        require_finite(cycle);
 
         const double mean_ne = ne_accum * inv_steps;
         const double drift =

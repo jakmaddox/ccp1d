@@ -145,6 +145,11 @@ public:
     /// Advance a single timestep. `time` is the time at the start of the step.
     void step(double time);
 
+    /// Throw std::runtime_error naming `cycle` if the state is not finite. A
+    /// NaN spreads through every field within a step, and run() calls this
+    /// after each cycle; a caller stepping by hand should do the same.
+    void require_finite(int cycle) const;
+
     double timestep() const noexcept { return dt_; }
     const Grid& grid() const noexcept { return grid_; }
 

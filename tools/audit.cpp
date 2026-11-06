@@ -14,6 +14,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <exception>
 #include <string>
 #include <vector>
 
@@ -131,7 +132,7 @@ void convergence_study(const DischargeConfig& base, int cycles) {
 
 }  // namespace
 
-int main(int argc, char** argv) {
+int main(int argc, char** argv) try {
     const Options opt = parse(argc, argv);
     const DischargeConfig& cfg = opt.config;
     std::printf("ccp1d audit: %.0f mTorr, %.0f V, %zu cells, %d steps/cycle, %d cycles\n",
@@ -197,4 +198,7 @@ int main(int argc, char** argv) {
 
     if (opt.convergence) convergence_study(cfg, opt.convergence_cycles);
     return EXIT_SUCCESS;
+} catch (const std::exception& error) {
+    std::fprintf(stderr, "error: %s\n", error.what());
+    return EXIT_FAILURE;
 }
