@@ -20,6 +20,7 @@ DischargeSolver::DischargeSolver(DischargeConfig config)
     : config_(config),
       grid_(config.num_cells, config.gap_length),
       gas_(config.pressure_mtorr, config.gas_temperature_k),
+      kinetics_(gas_, config.transport_table),
       dt_(1.0 / (config.rf_frequency * static_cast<double>(config.steps_per_cycle))),
       omega_(2.0 * constants::kPi * config.rf_frequency),
       // Free fall through the largest potential difference in the gap. With
@@ -123,9 +124,9 @@ void DischargeSolver::solve_field_explicit(double applied_voltage) {
 /// Build the effective face permittivity for the semi-implicit Poisson solve.
 ///
 /// Explicitly coupling Poisson to the continuity equations imposes the
-/// dielectric relaxation limit dt < eps0 / (e mu_e n_e), which at 10^16 m^-3
-/// is about 4 ps -- roughly twenty times smaller than the timestep needed to
-/// resolve a 13.56 MHz cycle. Following Ventzek, the charge density in
+/// dielectric relaxation limit dt < eps0 / (e mu_e n_e), which is about 45 ps
+/// at 10^16 m^-3 and about 16 ps at the 2.8e16 m^-3 peak, below the 74 ps
+/// default timestep. Following Ventzek, the charge density in
 /// Poisson's equation is advanced one step first,
 ///
 ///     div(eps0 E^{n+1}) = rho^n - dt div(J^{n+1}),
@@ -243,7 +244,6 @@ void DischargeSolver::compute_field(double applied_voltage) {
 
 void DischargeSolver::compute_electron_transport() {
     const std::size_t n = grid_.num_cells();
-    const double mu = gas_.electron_mobility();
 
     for (std::size_t f = 0; f <= n; ++f) {
         // Upwind-biased face temperature would be more robust in strong
@@ -258,17 +258,17 @@ void DischargeSolver::compute_electron_transport() {
             te = 0.5 * (temperature(f - 1) + temperature(f));
         }
         te_face_[f] = te;
-        mue_face_[f] = mu;
-        de_face_[f] = gas_.electron_diffusivity(te);
+        mue_face_[f] = kinetics_.mobility(te);
+        de_face_[f] = kinetics_.diffusivity(te);
     }
 }
 
 void DischargeSolver::compute_rates() {
     for (std::size_t i = 0; i < grid_.num_cells(); ++i) {
         const double te = temperature(i);
-        kiz_[i] = argon::ionisation_rate(te);
-        kex_[i] = argon::excitation_rate(te);
-        kel_[i] = argon::elastic_rate(te);
+        kiz_[i] = kinetics_.ionisation_rate(te);
+        kex_[i] = kinetics_.excitation_rate(te);
+        kel_[i] = kinetics_.elastic_rate(te);
     }
 }
 
@@ -569,7 +569,13 @@ CycleDiagnostics DischargeSolver::run(bool verbose) {
     if (verbose) {
         std::cout << "  gas density   " << std::scientific << std::setprecision(3)
                   << ngas << " m^-3\n"
-                  << "  electron mu   " << gas_.electron_mobility() << " m^2/(V s)\n"
+                  << "  electron mu   ";
+        if (kinetics_.tabulated()) {
+            std::cout << "from transport table\n";
+        } else {
+            std::cout << gas_.electron_mobility() << " m^2/(V s)\n";
+        }
+        std::cout
                   << "  timestep      " << dt_ << " s\n"
                   << "  cells         " << n << ", dx = " << dx << " m\n"
                   << "  Poisson       "
@@ -603,7 +609,7 @@ CycleDiagnostics DischargeSolver::run(bool verbose) {
                 // on them; ions drift along E, so +Gamma_i.E.
                 pe += -0.5 * (gamma_e_[i] * efield_[i] + gamma_e_[i + 1] * efield_[i + 1]);
                 pi += 0.5 * (gamma_i_[i] * efield_[i] + gamma_i_[i + 1] * efield_[i + 1]);
-                ionisation += argon::ionisation_rate(temperature(i)) * ngas * ne_[i];
+                ionisation += kinetics_.ionisation_rate(temperature(i)) * ngas * ne_[i];
                 ne_sum += ne_[i];
 
                 // Unclamped ratio: reaching the ceiling means the ceiling bound.

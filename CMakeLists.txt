@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.16)
 
 project(ccp1d
-    VERSION 0.2.0
+    VERSION 0.2.1
     DESCRIPTION "1D drift-diffusion model of a capacitively-coupled RF discharge"
     LANGUAGES CXX)
 
@@ -20,7 +20,8 @@ target_compile_options(ccp1d_warnings INTERFACE
     -Wall -Wextra -Wpedantic -Wshadow -Wconversion)
 
 add_library(ccp1d_core STATIC
-    src/discharge.cpp)
+    src/discharge.cpp
+    src/transport.cpp)
 target_include_directories(ccp1d_core PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/include)
 target_link_libraries(ccp1d_core PUBLIC ccp1d_warnings)
@@ -30,6 +31,9 @@ target_link_libraries(ccp1d PRIVATE ccp1d_core)
 
 add_executable(ccp1d_audit tools/audit.cpp)
 target_link_libraries(ccp1d_audit PRIVATE ccp1d_core)
+
+add_executable(ccp1d_benchmark tools/benchmark.cpp)
+target_link_libraries(ccp1d_benchmark PRIVATE ccp1d_core)
 
 enable_testing()
 

@@ -91,8 +91,8 @@ a backstop and have not been seen to activate.
 
 **Semi-implicit Poisson.** Coupling Poisson explicitly to the continuity
 equations imposes the dielectric relaxation limit `dt < eps0 / (e mu_e n_e)`,
-which at 1e16 m^-3 is about 4 ps, roughly twenty times smaller than the
-timestep needed to resolve 13.56 MHz. Advancing the charge density inside
+which is about 45 ps at 1e16 m^-3 and about 16 ps at the 2.8e16 m^-3 peak,
+below the 74 ps default timestep. Advancing the charge density inside
 Poisson's equation and writing the drift current against the unknown field moves
 the conductivity onto the left-hand side as an effective permittivity,
 
@@ -116,8 +116,8 @@ continuity equation never carried. Matching the two cut the continuity
 violation by 2.7x.
 
 `--explicit-poisson` restores the naive treatment, and the failure mode is worth
-seeing. It tracks the semi-implicit solution to four significant figures while
-the discharge is still filling (3.9263e15 against 3.9287e15 at cycle 120) and
+seeing. It tracks the semi-implicit solution to three significant figures while
+the discharge is still filling (3.9268e15 against 3.9339e15 at cycle 120) and
 then goes to NaN between cycles 120 and 140, as the rising density pushes the
 dielectric relaxation time below the timestep. The instability is invisible
 until the plasma density crosses the threshold, which is exactly what makes it
@@ -242,7 +242,7 @@ ctest --test-dir build --output-on-failure
 Requires CMake 3.16+ and a C++17 compiler. No external dependencies. Every
 target, tests and tools included, builds warning-clean under
 `-Wall -Wextra -Wpedantic -Wshadow -Wconversion`. The test suite takes about
-ten seconds.
+twenty seconds.
 
 ## Running
 
@@ -251,10 +251,12 @@ ten seconds.
 ./build/ccp1d --cycles 3000                      # to periodic steady state
 ./build/ccp1d --pressure 500 --voltage 200
 ./build/ccp1d --drift-cap 0                      # remove the electron drift cap
+./build/ccp1d --transport-table argon.table      # Boltzmann transport and rates
 ./build/ccp1d --help
 
 ./build/ccp1d_audit                              # verification report
 ./build/ccp1d_audit --cycles 100 --convergence   # plus grid and dt studies
+./build/ccp1d_benchmark --voltage 75 --yield 0.1 --emission-energy 0.75 --cycles 6000
 ```
 
 Profiles are written as CSV and can be plotted with
@@ -263,21 +265,119 @@ Profiles are written as CSV and can be plotted with
 python3 tools/plot_profiles.py profiles.csv docs/profiles.png
 ```
 
+## Transport tables
+
+By default the electron closure is a constant `mu N`, the Einstein relation and
+the Lieberman rate fits. `--transport-table` replaces all of these with
+coefficients tabulated against mean energy, usually from a Boltzmann solver. It
+is optional, and ccp1d builds and runs without it.
+
+Tables are made from electron cross sections, which ccp1d does not include.
+LXCat asks third parties to send users to its site for the data, so:
+
+1. Download a complete argon set from [LXCat](https://www.lxcat.net) in
+   BOLSIG+ format. The site asks you to agree to its terms first, and the
+   file's header gives the references to cite.
+2. Install the generator's dependencies and build the table:
+
+   ```
+   pip install bolos numpy scipy
+   python tools/make_transport_table.py argon_cross_sections.txt -o argon.table
+   ```
+
+3. Run with `./build/ccp1d --transport-table argon.table`.
+
+LXCat's terms say its databases are not to be distributed by third parties or
+used for commercial purposes, so neither the cross sections nor tables made from
+them belong in this repository (`*.table` is ignored). Commercial use needs
+permission from the data's contributor: see LXCat's redistribution policy.
+
+`python tools/make_transport_table.py --check` tests the generator with no real
+data, on a made-up gas whose exact mobility is known. It agrees to 0.2% from
+0.3 to 10 Td.
+
+The table is `mean_energy mu_N D_N k_elastic k_excitation k_ionisation` in SI
+units and eV. Mean energy is the axis because the model is local mean energy,
+and the drift cap and 5/3 energy transport factor still apply. The excitation
+column is weighted by threshold so that a set with many levels loses the right
+energy at the fixed 11.55 eV cost; it is not a count of excitation events.
+
+The table path is checked against the built-in model: the built-in closure
+written as a table reproduces a 20-cycle discharge to 8e-6 in `n_e`, and the
+energy and charge balances close with a closure unrelated to the built-in one.
+### Phelps argon
+
+The default case at 3000 cycles, built-in closure against a table from the Phelps
+argon set:
+
+| quantity | built-in | Phelps table |
+| --- | --- | --- |
+| mean electron density | 1.04e16 m^-3 | 7.78e15 m^-3 |
+| peak electron density | 2.81e16 m^-3 | 1.14e16 m^-3 |
+| bulk mean energy | 2.4 eV (Te 1.57 V) | 5.65 eV at mid-gap |
+| total absorbed power | 1.94e4 W m^-3 | 1.01e5 W m^-3 |
+| electron drift cap duty | 27.6% | 2.9% |
+| drift over last cycle | 7.7e-6 | 1.1e-11 |
+
+Power rises about fivefold, mainly because the Boltzmann mobility near 5 eV is
+about 1e24 1/(m V s), four times below the built-in 4.0e24. The drift cap almost
+stops binding. Mesh convergence holds: 200 cells reads 3.2% low at 100 cycles,
+with observed order 0.95.
+
+These numbers are not validated, as the benchmark below shows. Do not read the
+table column as more correct than the built-in one.
+
+The energy budget closes less well with a table: 2.1% of input against under
+0.1%. Measured directly, nearly all of that is negative Ohmic heating in a few
+cold cells at the sheath edge. There the table's `D/mu` exceeds what the local
+mean energy can supply, so the Patankar limiter drops the part of the sink that
+would drive the energy negative. Keep the table's lower end near thermal energy:
+stopping it at 0.8 eV gave a 10% residual, which is why the generator starts at
+5e-4 Td.
+
+Data: Phelps database, www.lxcat.net, retrieved on November 6, 2026, based on
+Yamabe, Buckman and Phelps, *Phys. Rev. A* **27** (1983) 1345, revised 1997.
+
+### Benchmark against a measured discharge
+
+Tsagkaridis et al. (2025) report a symmetric 13.56 MHz argon discharge at 1 Torr
+with a 2 cm gap, 150 V peak-to-peak, one electrode grounded. ccp1d ran this at
+75 V amplitude, `gamma` = 0.1 and 0.75 eV emitted electrons, for 6000 cycles.
+Values are cycle averages at mid-gap, from `ccp1d_benchmark`:
+
+| quantity | measured | their fluid model | ccp1d built-in | ccp1d Phelps |
+| --- | --- | --- | --- | --- |
+| plasma potential | 46.3 V | 47.6 V | 40.5 V | 59.3 V |
+| electron density | ~2e15 m^-3 | ~3.5e16 m^-3 | 4.4e15 m^-3 | 1.5e15 m^-3 |
+| electron temperature | not reported | 2.92 V | 1.53 V | 3.88 V |
+
+Neither closure reproduces the discharge. The plasma potential, the firmer
+measurement, is 13% low with the built-in closure and 28% high with Phelps. The
+densities are read from a figure, and the authors rate the probe density as an
+order-of-magnitude estimate, so being within a factor of two of it shows little.
+Their own model, with far more physics, overpredicts it by a factor of 16.
+
+The pattern is informative, though. With a Maxwellian distribution their model
+gives 1.24 V and 38.6 V, close to the built-in closure, which also assumes one.
+With Boltzmann distributions it gives 2.92 V and 47.6 V, and the Phelps table
+lands above both. A likely reason, not tested here, is that ccp1d has no
+metastables: without two-step ionisation the discharge must run hotter to
+ionise from the ground state alone. Lymberopoulos and Economou (1993) found
+two-step ionisation to be the main electron source at 1 Torr.
+
 ## Next steps
 
 In rough order of value:
 
-1. Tabulated `mu(E/N)`, `D(E/N)` and rate coefficients from a Boltzmann solver,
-   replacing the constant-mobility closure, its speed cap, and the extrapolated
-   rate fits. The audit numbers above are the case for doing this first.
+1. Metastable argon as a fourth species, to test whether two-step ionisation
+   closes the benchmark gap above. Boltzmann tables should not become the
+   default before that.
 2. A manufactured-solution test for the transport operators, the one class of
    error the current suite cannot see.
-3. Metastable argon as a fourth species, which matters for the ionisation
-   balance well before anything below it does.
-4. Kokkos or CUDA offload of the flux assembly and tridiagonal solves. The
+3. Kokkos or CUDA offload of the flux assembly and tridiagonal solves. The
    assembly is embarrassingly parallel across faces; the tridiagonal solves need
    cyclic reduction rather than Thomas.
-5. MPI domain decomposition, for extension to 2D where the tridiagonal structure
+4. MPI domain decomposition, for extension to 2D where the tridiagonal structure
    is lost and a Krylov solve with a multigrid preconditioner is needed instead.
 
 ## References
@@ -287,3 +387,6 @@ In rough order of value:
 - Lieberman & Lichtenberg, *Principles of Plasma Discharges and Materials
   Processing*, 2nd ed., Wiley (2005).
 - Hagelaar & Pitchford, *Plasma Sources Sci. Technol.* **14** (2005) 722.
+- BOLOS, a two-term Boltzmann solver: https://github.com/aluque/bolos
+- Lymberopoulos & Economou, *J. Appl. Phys.* **73** (1993) 3668.
+- Tsagkaridis et al., *Plasma Sources Sci. Technol.* **34** (2025) 105013.

@@ -2,6 +2,7 @@
 #include <exception>
 #include <iomanip>
 #include <iostream>
+#include <memory>
 #include <string>
 
 #include "discharge.hpp"
@@ -24,6 +25,11 @@ void print_usage(const char* program) {
         << "  --gummel <n>          Gummel sweeps per step       (default " << d.gummel_iterations << ")\n"
         << "  --drift-cap <f>       electron drift cap, multiple of v_th (default "
         << d.drift_speed_limit_factor << "; 0 disables)\n"
+        << "  --transport-table <path>\n"
+        << "                        electron mobility, diffusivity and rates against\n"
+        << "                        mean energy (default: built-in model)\n"
+        << "  --write-analytic-table <path>\n"
+        << "                        write the built-in model as a table and exit\n"
         << "  --output <path>       profile CSV                  (default profiles.csv)\n"
         << "  --explicit-poisson    disable the semi-implicit Poisson solve\n"
         << "                        (expect divergence at the default timestep)\n"
@@ -71,6 +77,12 @@ int main(int argc, char** argv) {
             } else if (matches(arg, "--drift-cap") && has_value) {
                 const double f = std::stod(argv[++i]);
                 config.drift_speed_limit_factor = (f > 0.0) ? f : 1.0e12;
+            } else if (matches(arg, "--transport-table") && has_value) {
+                config.transport_table = std::make_shared<const ccp::TransportTable>(
+                    ccp::TransportTable::load(argv[++i]));
+            } else if (matches(arg, "--write-analytic-table") && has_value) {
+                ccp::TransportTable::from_analytic().save(argv[++i]);
+                return EXIT_SUCCESS;
             } else if (matches(arg, "--output") && has_value) {
                 output_path = argv[++i];
             } else {

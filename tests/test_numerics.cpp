@@ -1,3 +1,7 @@
+#include <algorithm>
+#include <cstdio>
+#include <memory>
+#include <stdexcept>
 #include <cmath>
 #include <cstdlib>
 #include <iomanip>
@@ -240,6 +244,62 @@ void test_gas_properties() {
           "excitation dominates ionisation at low Te");
 }
 
+void test_transport_table() {
+    std::cout << "\nTransport table\n";
+
+    // A power law is exact under log-log interpolation.
+    const ccp::TransportTable coarse({{1.0, 1.0, 1.0, 1.0, 0.0, 0.0},
+                                      {100.0, 1.0e-2, 1.0e2, 1.0, 1.0, 1.0}});
+    check_close(coarse.mobility_n(10.0), 0.1, 1e-12, "power law interpolates exactly");
+    check_close(coarse.diffusivity_n(0.1), 1.0, 1e-12, "low end value is held");
+    check_close(coarse.diffusivity_n(1.0e4), 100.0, 1e-12, "high end value is held");
+    check(coarse.k_ionisation(0.5) < 1.0e-250, "a zero rate below threshold stays negligible");
+
+    const ccp::TransportTable table = ccp::TransportTable::from_analytic();
+    const ccp::ArgonGas gas(1000.0, 300.0);
+    const ccp::ElectronKinetics analytic(gas, nullptr);
+    const ccp::ElectronKinetics tabulated(
+        gas, std::make_shared<const ccp::TransportTable>(table));
+
+    // Over the Te the discharge samples, including the steep onset of k_iz.
+    double worst = 0.0;
+    for (double te = 0.2; te <= 40.0; te *= 1.0173) {
+        const auto error = [](double a, double b) { return std::abs(a / b - 1.0); };
+        worst = std::max({worst, error(tabulated.mobility(te), analytic.mobility(te)),
+                          error(tabulated.diffusivity(te), analytic.diffusivity(te)),
+                          error(tabulated.ionisation_rate(te), analytic.ionisation_rate(te)),
+                          error(tabulated.excitation_rate(te), analytic.excitation_rate(te)),
+                          error(tabulated.elastic_rate(te), analytic.elastic_rate(te))});
+    }
+    check(worst < 2.0e-4, "the analytic table reproduces the built-in model");
+    check_close(tabulated.ionisation_rate(1.0e3), ccp::argon::ionisation_rate(1.0e3), 1e-12,
+                "end value matches the clamp on the fits");
+
+    const std::string path = "ccp1d_transport_roundtrip.tmp";
+    table.save(path);
+    const ccp::TransportTable reread = ccp::TransportTable::load(path);
+    check(reread.rows().size() == table.rows().size() &&
+              reread.rows()[1000].k_ionisation == table.rows()[1000].k_ionisation,
+          "a saved table reads back exactly");
+    std::remove(path.c_str());
+
+    const auto rejected = [](std::vector<ccp::TransportTable::Row> rows) {
+        try {
+            const ccp::TransportTable bad(std::move(rows));
+        } catch (const std::invalid_argument&) {
+            return true;
+        }
+        return false;
+    };
+    check(rejected({{1.0, 1.0, 1.0, 1.0, 1.0, 1.0}}), "a single row is rejected");
+    check(rejected({{2.0, 1.0, 1.0, 1.0, 1.0, 1.0}, {1.0, 1.0, 1.0, 1.0, 1.0, 1.0}}),
+          "descending energies are rejected");
+    check(rejected({{1.0, 0.0, 1.0, 1.0, 1.0, 1.0}, {2.0, 1.0, 1.0, 1.0, 1.0, 1.0}}),
+          "a zero mobility is rejected");
+    check(rejected({{1.0, 1.0, 1.0, -1.0, 1.0, 1.0}, {2.0, 1.0, 1.0, 1.0, 1.0, 1.0}}),
+          "a negative rate is rejected");
+}
+
 }  // namespace
 
 int main() {
@@ -250,6 +310,7 @@ int main() {
     test_scharfetter_gummel_limits();
     test_poisson_operator();
     test_gas_properties();
+    test_transport_table();
 
     std::cout << "\n" << (failures == 0 ? "all tests passed" : "FAILURES: ")
               << (failures == 0 ? "" : std::to_string(failures)) << "\n";

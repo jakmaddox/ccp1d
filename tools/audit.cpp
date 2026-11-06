@@ -42,6 +42,10 @@ Options parse(int argc, char** argv) {
         else if (a == "--pressure" && v) o.config.pressure_mtorr = std::stod(argv[++i]);
         else if (a == "--voltage" && v) o.config.rf_voltage = std::stod(argv[++i]);
         else if (a == "--gummel" && v) o.config.gummel_iterations = std::stoi(argv[++i]);
+        else if (a == "--transport-table" && v) {
+            o.config.transport_table = std::make_shared<const ccp::TransportTable>(
+                ccp::TransportTable::load(argv[++i]));
+        }
         else if (a == "--drift-cap" && v) {
             const double f = std::stod(argv[++i]);
             o.config.drift_speed_limit_factor = (f > 0.0) ? f : 1.0e12;
@@ -51,6 +55,7 @@ Options parse(int argc, char** argv) {
             std::fprintf(stderr,
                          "usage: %s [--cycles n] [--cells n] [--steps n] [--pressure mTorr]\n"
                          "          [--voltage V] [--gummel n] [--drift-cap f]\n"
+                         "          [--transport-table path]\n"
                          "          [--convergence] [--convergence-cycles n]\n",
                          argv[0]);
             std::exit(EXIT_FAILURE);
@@ -74,7 +79,7 @@ void rate_fit_extrapolation(DischargeSolver& solver, double& time, double te_lim
         const auto& ne = solver.electron_density();
         for (std::size_t i = 0; i < ne.size(); ++i) {
             const double te = (2.0 / 3.0) * solver.mean_energy_at(i);
-            const double src = ccp::argon::ionisation_rate(te) * ngas * ne[i];
+            const double src = solver.kinetics().ionisation_rate(te) * ngas * ne[i];
             total += src;
             if (te > te_limit) hot += src;
             te_max = std::max(te_max, te);

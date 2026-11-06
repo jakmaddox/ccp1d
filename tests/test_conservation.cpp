@@ -14,9 +14,12 @@
 #include <cmath>
 #include <cstdlib>
 #include <iomanip>
+#include <algorithm>
 #include <iostream>
+#include <memory>
 #include <sstream>
 #include <string>
+#include <vector>
 
 #include "discharge.hpp"
 #include "verification.hpp"
@@ -102,6 +105,62 @@ void test_charge_balance() {
     const ccp::verify::ChargeBalance q = ccp::verify::charge_balance_over_cycle(solver, time);
     check(q.relative < 2.5e-5, "net charge changes only by the net wall current",
           "imbalance " + sci(q.relative) + " of ion production");
+}
+
+// A closure with no relation to the built-in one: mu*N falls with energy, D
+// breaks the Einstein relation and every rate is scaled.
+std::shared_ptr<const ccp::TransportTable> varying_table() {
+    std::vector<ccp::TransportTable::Row> rows = ccp::TransportTable::from_analytic().rows();
+    for (auto& r : rows) {
+        const double shape = 1.0 / (1.0 + r.mean_energy / 20.0);
+        r.mobility_n *= shape;
+        r.diffusivity_n *= 1.3 * shape;
+        r.k_elastic *= 1.2;
+        r.k_excitation *= 0.8;
+        r.k_ionisation *= 0.9;
+    }
+    return std::make_shared<const ccp::TransportTable>(std::move(rows));
+}
+
+void test_transport_table() {
+    std::cout << "\nTabulated closure\n";
+
+    // The analytic closure in table form must give the analytic discharge.
+    // Only interpolation separates the two runs, so this is the check that
+    // the table reaches every place the solver reads a coefficient.
+    ccp::DischargeConfig config = test_config();
+    ccp::DischargeSolver analytic(config);
+    config.transport_table =
+        std::make_shared<const ccp::TransportTable>(ccp::TransportTable::from_analytic());
+    ccp::DischargeSolver tabulated(config);
+    double t1 = 0.0;
+    double t2 = 0.0;
+    ccp::verify::advance_cycles(analytic, t1, 20);
+    ccp::verify::advance_cycles(tabulated, t2, 20);
+    double worst = 0.0;
+    for (std::size_t i = 0; i < analytic.electron_density().size(); ++i) {
+        worst = std::max(worst, std::abs(tabulated.electron_density()[i] /
+                                             analytic.electron_density()[i] - 1.0));
+    }
+    check(worst < 1.0e-3, "the analytic table reproduces the analytic discharge",
+          "worst n_e difference " + sci(worst));
+
+    // Balances recompute losses from solver.kinetics(). If any of them read
+    // the fits directly, these rates would leave them open.
+    config = test_config();
+    config.steps_per_cycle = 1000;
+    config.transport_table = varying_table();
+    ccp::DischargeSolver solver(config);
+    double time = 0.0;
+    ccp::verify::advance_cycles(solver, time, 30);
+    const ccp::verify::EnergyBudget b =
+        ccp::verify::energy_budget_over_cycle(solver, time);
+    const ccp::verify::ChargeBalance q =
+        ccp::verify::charge_balance_over_cycle(solver, time);
+    check(b.relative_residual() < 1.0e-3, "energy budget closes with a varying closure",
+          "residual " + sci(b.relative_residual()));
+    check(q.relative < 2.5e-5, "charge balance closes with a varying closure",
+          "imbalance " + sci(q.relative));
 }
 
 void test_undriven_symmetry() {
@@ -246,6 +305,7 @@ int main() {
 
     test_energy_balance();
     test_charge_balance();
+    test_transport_table();
     test_undriven_symmetry();
     test_driven_symmetry();
     test_convergence_order();

@@ -52,6 +52,7 @@ inline EnergyBudget energy_budget_over_cycle(DischargeSolver& solver, double& ti
     const double ngas = gas.number_density();
     const double tgas = gas.temperature_volts();
     const double mass_ratio = constants::kElectronMass / argon::kMass;
+    const ElectronKinetics& kinetics = solver.kinetics();
 
     auto total_energy = [&]() {
         double u = 0.0;
@@ -75,10 +76,10 @@ inline EnergyBudget energy_budget_over_cycle(DischargeSolver& solver, double& ti
             b.ohmic += -0.5 * (ge[i] * ef[i] + ge[i + 1] * ef[i + 1]) * dx;
 
             const double te = (2.0 / 3.0) * solver.mean_energy_at(i);
-            b.inelastic += (argon::ionisation_rate(te) * argon::kIonisationThreshold +
-                            argon::excitation_rate(te) * argon::kExcitationThreshold) *
+            b.inelastic += (kinetics.ionisation_rate(te) * argon::kIonisationThreshold +
+                            kinetics.excitation_rate(te) * argon::kExcitationThreshold) *
                            ngas * ne[i] * dx;
-            b.elastic += 3.0 * mass_ratio * argon::elastic_rate(te) * ngas * ne[i] *
+            b.elastic += 3.0 * mass_ratio * kinetics.elastic_rate(te) * ngas * ne[i] *
                          std::max(te - tgas, 0.0) * dx;
         }
 
@@ -237,7 +238,7 @@ inline ChargeBalance charge_balance_over_cycle(DischargeSolver& solver, double& 
         wall += (-(gi[n] - gi[0]) + (ge[n] - ge[0])) * dt;
         for (std::size_t i = 0; i < n; ++i) {
             const double te = (2.0 / 3.0) * solver.mean_energy_at(i);
-            c.production += argon::ionisation_rate(te) * ngas *
+            c.production += solver.kinetics().ionisation_rate(te) * ngas *
                             solver.electron_density()[i] * dx * dt;
         }
     }

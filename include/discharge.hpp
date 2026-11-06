@@ -1,11 +1,13 @@
 #pragma once
 
 #include <cstddef>
+#include <memory>
 #include <string>
 #include <vector>
 
 #include "argon.hpp"
 #include "grid.hpp"
+#include "transport.hpp"
 #include "tridiagonal.hpp"
 
 namespace ccp {
@@ -47,16 +49,22 @@ struct DischargeConfig {
 
     /// Constant-mobility drift-diffusion has no high-field saturation, so in
     /// the sheath mu_e E reaches several times the electron thermal speed
-    /// (about 5x at the defaults, ~1e7 m/s). Real codes take an E/N-dependent
-    /// mobility from a Boltzmann solver; lacking one, the drift speed is
-    /// capped at this multiple of the local thermal speed, which is where the
-    /// fluid closure fails anyway.
+    /// (about 5x at the defaults, ~1e7 m/s). A Boltzmann table in
+    /// `transport_table` carries the mobility's energy dependence; either way
+    /// the drift speed is capped at this multiple of the local thermal speed,
+    /// which is where the fluid closure fails anyway.
     ///
     /// This is not a passive guard. At the defaults it binds on about 28% of
     /// interior faces over a cycle and removing it changes the absorbed power
     /// by roughly 25%, so the capped region is modelled as free-streaming at
     /// v_th. CycleDiagnostics::drift_cap_duty reports how much it is doing.
     double drift_speed_limit_factor = 1.0;
+
+    /// Electron transport and rates against mean energy, usually from a
+    /// Boltzmann solver. Null keeps the built-in constant mobility, Einstein
+    /// relation and Lieberman fits. The drift cap and the 5/3 energy transport
+    /// factor apply either way. Ion transport does not come from this table.
+    std::shared_ptr<const TransportTable> transport_table;
 
     /// Use the semi-implicit Poisson formulation, which folds the plasma
     /// conductivity into an effective permittivity and removes the dielectric
@@ -155,6 +163,7 @@ public:
 
     const DischargeConfig& config() const noexcept { return config_; }
     const ArgonGas& gas() const noexcept { return gas_; }
+    const ElectronKinetics& kinetics() const noexcept { return kinetics_; }
 
     /// Local electron temperature in volts, cell by cell.
     std::vector<double> electron_temperature() const;
@@ -204,6 +213,7 @@ private:
     DischargeConfig config_;
     Grid grid_;
     ArgonGas gas_;
+    ElectronKinetics kinetics_;
     double dt_;
     double omega_;
     double ion_speed_cap_;
