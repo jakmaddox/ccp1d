@@ -56,7 +56,7 @@ struct DischargeConfig {
     ///
     /// This is not a passive guard. At the defaults it binds on about 28% of
     /// interior faces over a cycle and removing it changes the absorbed power
-    /// by roughly 25%, so the capped region is modelled as free-streaming at
+    /// by roughly 20%, so the capped region is modelled as free-streaming at
     /// v_th. CycleDiagnostics::drift_cap_duty reports how much it is doing.
     double drift_speed_limit_factor = 1.0;
 

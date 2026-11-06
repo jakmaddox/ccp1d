@@ -61,14 +61,14 @@ void test_energy_balance() {
 
     // Ohmic + secondary = inelastic + elastic + wall + d/dt(stored), measured
     // over one cycle after 30. The smallest physical term, secondary-electron
-    // energy, is 1.4e-3 of input, so 1e-3 is tight enough that a sign error
+    // energy, is 1.3e-3 of input, so 1e-3 is tight enough that a sign error
     // even there fails the test.
     //
     // The residual is not zero because the solver freezes rate coefficients
     // for a Gummel sweep while this check evaluates losses at the end-of-step
-    // state. That lag vanishes faster than dt: measured 5.5e-4, 9.3e-5 and
-    // 1.4e-5 of input at 500, 1000 and 2000 steps per cycle. The test runs at
-    // 1000 to keep a tenfold margin under the tolerance.
+    // state. That lag vanishes faster than dt: measured 1.0e-5, 3.0e-6 and
+    // 4.7e-7 of input at 500, 1000 and 2000 steps per cycle. It also vanishes
+    // with sweeps: 9.0e-8 at 6 and 8.2e-11 at 12, against 3.0e-6 at 3.
     ccp::DischargeConfig config = test_config();
     config.steps_per_cycle = 1000;
     ccp::DischargeSolver solver(config);
@@ -94,7 +94,7 @@ void test_charge_balance() {
     // Ionisation makes electron-ion pairs, so the net charge in the gap can
     // change only through the net wall current, independent of k_iz. This is
     // the check on the species sources: a 1% electron/ion production mismatch
-    // reads exactly 1.0e-2 here. Measured 5.0e-6 of gross production at 1000
+    // reads exactly 1.0e-2 here. Measured 3.5e-6 of gross production at 1000
     // steps per cycle; before the rate coefficients were frozen per Gummel
     // sweep it was 8.6e-5, which this tolerance rejects.
     ccp::DischargeConfig config = test_config();
@@ -169,7 +169,7 @@ void test_undriven_symmetry() {
     // With no applied voltage and a mirror-symmetric seed, every field must
     // stay mirror-symmetric to roundoff, and E antisymmetric. This is the
     // direct check on the hand-derived wall boundary conditions: any
-    // left/right sign inconsistency breaks it at O(1). Measured 4.9e-14.
+    // left/right sign inconsistency breaks it at O(1). Measured 4.8e-14.
     ccp::DischargeConfig config = test_config();
     config.rf_voltage = 0.0;
     ccp::DischargeSolver solver(config);
@@ -222,8 +222,8 @@ void test_driven_symmetry() {
 
     // In periodic steady state n(x,t) = n(L-x, t+T/2). Away from steady state
     // the violation should be set by the secular drift, so the test compares
-    // the two rather than demanding zero. Measured ratio 1.40 at 40 cycles and
-    // 1.02 at 160. A boundary-condition error gives an O(1) residual at any
+    // the two rather than demanding zero. Measured ratio 1.45 at 40 cycles and
+    // 1.13 at 160. A boundary-condition error gives an O(1) residual at any
     // drift.
     ccp::DischargeSolver solver(test_config());
     double time = 0.0;
