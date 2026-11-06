@@ -298,6 +298,30 @@ void test_current_continuity_scaling() {
           "p = " + fix(p));
 }
 
+void test_gummel_sweeps_tighten_continuity() {
+    std::cout << "\nPredictor consistency across Gummel sweeps\n";
+
+    // The predictor is rho^n - dt div(J^{n+1}), with J refined each sweep, so
+    // more sweeps should tighten continuity. Starting it from the iterate
+    // instead of rho^n changes nothing on the first sweep, when the two are
+    // equal, and counts the step's transport twice on every later one. That
+    // leaves the balances and orders above intact but doubles this error, so
+    // comparing against one sweep catches it. Measured 1.64e-2 with one sweep
+    // and 1.03e-2 with three; from the iterate, 3.33e-2 with three.
+    auto spread_with = [](int sweeps) {
+        ccp::DischargeConfig config = test_config();
+        config.gummel_iterations = sweeps;
+        ccp::DischargeSolver solver(config);
+        double time = 0.0;
+        ccp::verify::advance_cycles(solver, time, 20);
+        return ccp::verify::current_continuity_over_cycle(solver, time).mean_spread;
+    };
+    const double one = spread_with(1);
+    const double three = spread_with(3);
+    check(three < 0.8 * one, "Gummel sweeps reduce the continuity error",
+          "1 sweep " + sci(one) + ", 3 sweeps " + sci(three));
+}
+
 }  // namespace
 
 int main() {
@@ -310,6 +334,7 @@ int main() {
     test_driven_symmetry();
     test_convergence_order();
     test_current_continuity_scaling();
+    test_gummel_sweeps_tighten_continuity();
 
     std::cout << "\n" << (failures == 0 ? "all tests passed" : "FAILURES: ")
               << (failures == 0 ? "" : std::to_string(failures)) << "\n";
