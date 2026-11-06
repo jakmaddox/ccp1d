@@ -19,25 +19,25 @@ numerical guards are setting.
 ## Results
 
 1 Torr, 300 V, 13.56 MHz, 20 mm gap, 200 cells, 1000 steps per cycle, run for
-3000 RF cycles to a cycle-to-cycle drift of 7.7e-6 (`./build/ccp1d --cycles 3000`):
+3000 RF cycles to a cycle-to-cycle drift of 7.6e-6 (`./build/ccp1d --cycles 3000`):
 
 | quantity | value |
 | --- | --- |
 | mean electron density (gap and cycle average) | 1.04e16 m^-3 |
-| peak electron density | 2.81e16 m^-3 |
+| peak electron density | 2.80e16 m^-3 |
 | bulk electron temperature | 1.57 V |
-| peak mean electron energy (end of cycle / max over cycle) | 13.0 / 18.1 eV |
-| electron Joule power | 8.21e3 W m^-3 |
+| peak mean electron energy (end of cycle / max over cycle) | 13.0 / 18.2 eV |
+| electron Joule power | 8.19e3 W m^-3 |
 | ion Joule power | 1.12e4 W m^-3 |
 | total absorbed power | 1.94e4 W m^-3 |
-| electron drift cap duty | 27.6% of face evaluations |
+| electron drift cap duty | 27.7% of face evaluations |
 
 Two things about these numbers are easy to get wrong:
 
 - **Convergence takes thousands of cycles, not hundreds.** The equilibration
   time is the ambipolar diffusion time, `(L/pi)^2 / (mu_i Te)`, about 1.9e-4 s
   or roughly 2600 RF periods at these settings. At the default of 400 cycles,
-  which keeps a run near a minute, the mean density is still about 35% below
+  which keeps a run near a minute, the mean density is still about 36% below
   its periodic steady state.
   The solver warns while the cycle drift is above 1e-4.
 - **The ions absorb more than half the power** (58% here). The electron term
@@ -76,12 +76,15 @@ electron emission at the electrodes is included with a configurable yield.
 ## Numerics
 
 **Scharfetter-Gummel flux discretisation.** Central differencing of a
-drift-diffusion flux goes unstable once the cell Peclet number exceeds two,
-which in a sheath happens immediately; naive upwinding is stable but smears the
-sheath edge across several cells. Scharfetter-Gummel exponential fitting
-interpolates between the two. In the drift-dominated sheath it reduces to
-upwinding, so the scheme is first order there, and the convergence study below
-confirms that.
+drift-diffusion flux goes unstable once the cell Peclet number exceeds two;
+naive upwinding is stable but smears the sheath edge across several cells.
+Scharfetter-Gummel exponential fitting interpolates between the two, and only
+the ions reach the upwind end. Their cell Peclet number peaks near 370 at the
+defaults and exceeds two on 64% of face evaluations, so ion transport is first
+order in the sheath. Electrons stay near the central end: the drift cap holds
+their cell Peclet number below 0.47 at 200 cells, and below 0.92 at 100. The
+first order in the convergence study below is consistent with the upwinded
+ions, but no test isolates them as its cause.
 
 The transport part of each density matrix is an M-matrix. The electron
 equation also puts ionisation on the diagonal, `-k_iz N`, which erodes
@@ -105,23 +108,32 @@ which preserves the tridiagonal structure and removes the restriction.
 It is not free. Gauss's law is enforced against a predicted charge density
 rather than the one the transport solves then produce, so the total current
 `J_cond + eps0 dE/dt` is not exactly uniform in x. At the default timestep the
-violation averages 1.8% of the peak current over a cycle (3.9% worst) and it
-is first order in dt; `test_conservation` pins it to that scaling.
+violation averages 0.40% of the peak current over a cycle after 100 cycles
+(1.7% worst) and 0.46% at periodic steady state (1.7% worst). It is first order
+in dt; `test_conservation` pins it to that scaling.
+
+The predictor has to start from the charge density at the start of the step.
+Each sweep then refines `J`: after 20 cycles at the defaults, three sweeps give
+0.33% against 0.59% for one. An earlier version started from the current Gummel
+iterate, which counted the step's transport twice from the second sweep on. Its
+mean violation was 1.84% (3.95% worst), and sweeps made it worse. No balance or
+order check saw this, so `test_conservation` now requires the sweeps to help.
 
 The conductivity in `eps_eff` is built from the same limited drift the
 transport solve applies. Where the electron drift cap binds, the flux responds
 to the field with mobility `v_cap/|E|`, not `mu_e`; using the bare mobility
 there overstated sigma and enforced Gauss's law against a current the
 continuity equation never carried. Matching the two cut the continuity
-violation by 2.7x.
+violation by about 12x, from 4.7% to 0.40%.
 
 `--explicit-poisson` restores the naive treatment, and the failure mode is worth
 seeing. It tracks the semi-implicit solution to three significant figures while
-the discharge is still filling (3.9268e15 against 3.9339e15 at cycle 120) and
-then goes to NaN between cycles 120 and 140, as the rising density pushes the
-dielectric relaxation time below the timestep. The instability is invisible
-until the plasma density crosses the threshold, which is exactly what makes it
-worth designing out rather than tuning around.
+the discharge is still filling (3.9268e15 against 3.9261e15 at cycle 120) and
+then diverges at cycle 127, as the rising density pushes the dielectric
+relaxation time below the timestep. The instability is invisible until the
+plasma density crosses the threshold, which is exactly what makes it worth
+designing out rather than tuning around. The run loop checks the state after
+each cycle, so a diverged run stops with a non-zero exit and names the cycle.
 
 **Gummel iteration.** Each timestep sweeps Poisson, electrons, ions, and energy
 in sequence, repeated a few times so the strongly nonlinear coupling between
@@ -131,15 +143,17 @@ Rate coefficients are evaluated once per sweep, before any species moves, so
 the electron source, the ion source and the energy cost of ionisation all see
 the same `k_iz`. Re-evaluating them between the electron and ion updates, as an
 earlier version did, created electrons and ions in slightly different numbers:
-a spurious net charge source of 8.6e-5 of the ionisation rate, now 5.0e-6 and
+a spurious net charge source of 8.6e-5 of the ionisation rate, now 3.5e-6 and
 vanishing with dt. Each sub-solve is a tridiagonal system handled by the
 Thomas algorithm.
 
 ## Verification
 
-`ctest` runs two suites. `test_numerics` checks the building blocks in
-isolation; `test_conservation` checks that the assembled solver obeys the laws
-those blocks are supposed to add up to. Every quantity in the second suite is
+`ctest` runs two suites and three exit-code checks. `test_numerics` checks the
+building blocks in isolation; `test_conservation` checks that the assembled
+solver obeys the laws those blocks are supposed to add up to; the exit-code
+checks confirm that `ccp1d` and `ccp1d_benchmark` fail on a NaN run and name the
+cycle. Every quantity in the second suite is
 reconstructed from the solver's public state by `include/verification.hpp`,
 independently of the solver's own arithmetic, so a sign error or a missing
 factor shows up as a broken balance instead of being reproduced by the check.
@@ -149,19 +163,21 @@ factor shows up as a broken balance instead of being reproduced by the check.
 | Poisson operator vs analytic parabola, observed order | 2.000 | 1.9 to 2.1 |
 | vacuum gap: linear potential, E = V/L on every face | roundoff | 1e-9 |
 | Bernoulli function vs long-double reference | roundoff | 1e-14 |
-| global electron energy balance over one cycle | 9.3e-5 of input | 1e-3 |
-| global charge balance: net charge vs net wall current | 5.0e-6 of production | 2.5e-5 |
-| undriven decay stays mirror-symmetric | 4.9e-14 | 1e-10 |
-| driven: n(x,t) vs n(L-x,t+T/2), relative to cycle drift | 1.4 | < 3 |
-| observed order in space / time | 0.84 / 0.91 | 0.6 to 1.4 |
-| current-continuity error, order in dt | 0.96 | 0.6 to 1.4 |
+| global electron energy balance over one cycle | 3.0e-6 of input | 1e-3 |
+| global charge balance: net charge vs net wall current | 3.5e-6 of production | 2.5e-5 |
+| undriven decay stays mirror-symmetric | 4.8e-14 | 1e-10 |
+| driven: n(x,t) vs n(L-x,t+T/2), relative to cycle drift | 1.45 | < 3 |
+| observed order in space / time | 0.84 / 1.05 | 0.6 to 1.4 |
+| current-continuity error, order in dt | 0.97 | 0.6 to 1.4 |
+| continuity error, three Gummel sweeps over one | 0.63 | < 0.8 |
 
 The energy tolerance is set below the smallest physical term in the budget
-(secondary-electron energy, about 1.4e-3 of input) so that an error even there
+(secondary-electron energy, about 1.3e-3 of input) so that an error even there
 fails it. The two residuals are not zero because the solver freezes rate
 coefficients for a Gummel sweep while the checks evaluate the end-of-step
-state; both vanish faster than dt (energy: 5.5e-4, 9.3e-5, 1.4e-5 at 500,
-1000, 2000 steps per cycle).
+state; both vanish faster than dt (energy: 1.0e-5, 3.0e-6, 4.7e-7 at 500,
+1000, 2000 steps per cycle) and with more sweeps (energy: 9.0e-8 at 6 sweeps,
+8.2e-11 at 12).
 
 To confirm the suite can fail, bugs were planted one at a time:
 
@@ -173,6 +189,7 @@ To confirm the suite can fail, bugs were planted one at a time:
 | electron secondary-emission sign flipped at one wall | energy balance, both symmetry tests, convergence |
 | elastic loss factor 3 changed to 2 | energy balance |
 | electron and ion ionisation sources mismatched by 1% | charge balance (reads exactly 1.0e-2) |
+| Poisson predictor started from the Gummel iterate, not the old charge | Gummel sweep check (ratio 2.03) |
 | energy transport factor 5/3 changed to 1 | **not caught** |
 
 The last row is a real gap. Interior fluxes telescope, so no global balance can
@@ -187,25 +204,27 @@ with Richardson error estimates. At the defaults after 100 cycles
 
 | refinement | observed order | Richardson error at the middle level |
 | --- | --- | --- |
-| cells 100 / 200 / 400 | 0.87 | 200 cells reads 2.8% low |
+| cells 100 / 200 / 400 | 0.86 | 200 cells reads 2.8% low |
 | cells 200 / 400 / 800 | 0.94 | 400 cells reads 1.4% low |
-| steps 250 / 500 / 1000 | 0.93 | 500 steps reads 1.7% high |
-| steps 500 / 1000 / 2000 | 0.98 | 1000 steps reads 0.85% high |
+| steps 250 / 500 / 1000 | 0.91 | 500 steps reads 1.3% high |
+| steps 500 / 1000 / 2000 | 0.93 | 1000 steps reads 0.67% high |
 
-So the default resolution carries about 3% spatial and 0.9% temporal error in
+So the default resolution carries about 3% spatial and 0.7% temporal error in
 the mean density, of opposite sign. The two partly cancel at the defaults; that
 is coincidence, not design, and it will not hold at other settings.
 
 ## Validity
 
 The drift-diffusion closure needs the electron mean free path to be short
-compared with the gradient scale. In a 20 mm gap:
+compared with the gradient scale. In a 20 mm gap, taking the thermal speed at
+the 1.57 V bulk temperature over the collision rate (0.59 mm at 1 Torr from the
+built-in mobility, 0.54 mm from the elastic rate fit):
 
 | pressure | mean free path | mfp / gap |
 | --- | --- | --- |
-| 100 mTorr | 31 mm | 1.6 |
-| 300 mTorr | 10 mm | 0.5 |
-| 1 Torr | 3.1 mm | 0.16 |
+| 100 mTorr | 6 mm | 0.3 |
+| 300 mTorr | 2 mm | 0.1 |
+| 1 Torr | 0.6 mm | 0.03 |
 
 Three limits matter even at 1 Torr, and the code now measures each of them:
 
@@ -213,13 +232,13 @@ Three limits matter even at 1 Torr, and the code now measures each of them:
   high-field saturation, so in the sheath `mu_e E` reaches about five times the
   thermal speed. The drift is capped at `v_th`, and at the defaults that cap is
   active on about 28% of interior-face evaluations, out to roughly 5 mm from
-  each electrode. Removing it (`--drift-cap 0`) changes the electron power by
-  about 21% and the ion power by about 27%. Inside the capped region the model
+  each electrode. Removing it (`--drift-cap 0`) lowers the electron power by
+  about 19% and the ion power by about 21%. Inside the capped region the model
   is free-streaming at `v_th`, not drift-diffusion. The duty is printed every
   run.
 - **The rate fits are extrapolated.** The Lieberman fits are calibrated for
-  about 1 to 7 V. At 1 Torr the hottest cells reach about 12 V and roughly 15
-  to 20% of all ionisation comes from above 7 V.
+  about 1 to 7 V. At 1 Torr the hottest cells reach about 12 V, and 16% of all
+  ionisation comes from above 7 V after 100 cycles, 22% at steady state.
 - **The mean-energy ceiling is inert.** The 60 eV ceiling has not been seen to
   bind; the peak mean energy over a cycle is about 18 eV at 1 Torr and 21 eV at
   100 mTorr.
@@ -312,12 +331,12 @@ argon set:
 
 | quantity | built-in | Phelps table |
 | --- | --- | --- |
-| mean electron density | 1.04e16 m^-3 | 7.78e15 m^-3 |
-| peak electron density | 2.81e16 m^-3 | 1.14e16 m^-3 |
+| mean electron density | 1.04e16 m^-3 | 7.77e15 m^-3 |
+| peak electron density | 2.80e16 m^-3 | 1.13e16 m^-3 |
 | bulk mean energy | 2.4 eV (Te 1.57 V) | 5.65 eV at mid-gap |
 | total absorbed power | 1.94e4 W m^-3 | 1.01e5 W m^-3 |
-| electron drift cap duty | 27.6% | 2.9% |
-| drift over last cycle | 7.7e-6 | 1.1e-11 |
+| electron drift cap duty | 27.7% | 2.9% |
+| drift over last cycle | 7.6e-6 | 3.2e-12 |
 
 Power rises about fivefold, mainly because the Boltzmann mobility near 5 eV is
 about 1e24 1/(m V s), four times below the built-in 4.0e24. The drift cap almost

@@ -9,6 +9,7 @@
 
 #include <cstdio>
 #include <cstdlib>
+#include <exception>
 #include <memory>
 #include <string>
 
@@ -65,6 +66,7 @@ int main(int argc, char** argv) {
             energy += 0.5 * (solver.mean_energy_at(left) + solver.mean_energy_at(right));
             potential += 0.5 * (solver.potential()[left] + solver.potential()[right]);
         }
+        solver.require_finite(config.num_cycles);
         const double n = static_cast<double>(steps);
         std::printf("after %d cycles, mid-gap cycle averages\n", final_cycle);
         std::printf("  electron density   %.4e m^-3\n", ne / n);

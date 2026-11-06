@@ -61,14 +61,14 @@ void test_energy_balance() {
 
     // Ohmic + secondary = inelastic + elastic + wall + d/dt(stored), measured
     // over one cycle after 30. The smallest physical term, secondary-electron
-    // energy, is 1.4e-3 of input, so 1e-3 is tight enough that a sign error
+    // energy, is 1.3e-3 of input, so 1e-3 is tight enough that a sign error
     // even there fails the test.
     //
     // The residual is not zero because the solver freezes rate coefficients
     // for a Gummel sweep while this check evaluates losses at the end-of-step
-    // state. That lag vanishes faster than dt: measured 5.5e-4, 9.3e-5 and
-    // 1.4e-5 of input at 500, 1000 and 2000 steps per cycle. The test runs at
-    // 1000 to keep a tenfold margin under the tolerance.
+    // state. That lag vanishes faster than dt: measured 1.0e-5, 3.0e-6 and
+    // 4.7e-7 of input at 500, 1000 and 2000 steps per cycle. It also vanishes
+    // with sweeps: 9.0e-8 at 6 and 8.2e-11 at 12, against 3.0e-6 at 3.
     ccp::DischargeConfig config = test_config();
     config.steps_per_cycle = 1000;
     ccp::DischargeSolver solver(config);
@@ -94,7 +94,7 @@ void test_charge_balance() {
     // Ionisation makes electron-ion pairs, so the net charge in the gap can
     // change only through the net wall current, independent of k_iz. This is
     // the check on the species sources: a 1% electron/ion production mismatch
-    // reads exactly 1.0e-2 here. Measured 5.0e-6 of gross production at 1000
+    // reads exactly 1.0e-2 here. Measured 3.5e-6 of gross production at 1000
     // steps per cycle; before the rate coefficients were frozen per Gummel
     // sweep it was 8.6e-5, which this tolerance rejects.
     ccp::DischargeConfig config = test_config();
@@ -169,7 +169,7 @@ void test_undriven_symmetry() {
     // With no applied voltage and a mirror-symmetric seed, every field must
     // stay mirror-symmetric to roundoff, and E antisymmetric. This is the
     // direct check on the hand-derived wall boundary conditions: any
-    // left/right sign inconsistency breaks it at O(1). Measured 4.9e-14.
+    // left/right sign inconsistency breaks it at O(1). Measured 4.8e-14.
     ccp::DischargeConfig config = test_config();
     config.rf_voltage = 0.0;
     ccp::DischargeSolver solver(config);
@@ -222,8 +222,8 @@ void test_driven_symmetry() {
 
     // In periodic steady state n(x,t) = n(L-x, t+T/2). Away from steady state
     // the violation should be set by the secular drift, so the test compares
-    // the two rather than demanding zero. Measured ratio 1.40 at 40 cycles and
-    // 1.02 at 160. A boundary-condition error gives an O(1) residual at any
+    // the two rather than demanding zero. Measured ratio 1.45 at 40 cycles and
+    // 1.13 at 160. A boundary-condition error gives an O(1) residual at any
     // drift.
     ccp::DischargeSolver solver(test_config());
     double time = 0.0;
@@ -252,10 +252,12 @@ double mean_density_at(std::size_t cells, int steps, int cycles) {
 void test_convergence_order() {
     std::cout << "\nObserved order of accuracy\n";
 
-    // Scharfetter-Gummel reduces to upwinding in a drift-dominated sheath and
-    // backward Euler is first order, so the expected order is 1 in both. The
-    // estimate is p = log2(|q1 - q0| / |q2 - q1|) on successive halvings.
-    // Measured 0.84 in space (100/200/400 cells) and 1.15 in time.
+    // Scharfetter-Gummel reduces to upwinding for the ions in the sheath, and
+    // backward Euler is first order, so the expected order is 1 in both.
+    // Electrons do not reach upwinding: the drift cap keeps their cell Peclet
+    // number below one here. The estimate is p = log2(|q1 - q0| / |q2 - q1|)
+    // on successive halvings. Measured 0.84 in space (100/200/400 cells) and
+    // 1.05 in time.
     constexpr int kCycles = 20;
     const double c1 = mean_density_at(100, 250, kCycles);
     const double c2 = mean_density_at(200, 250, kCycles);
@@ -298,6 +300,30 @@ void test_current_continuity_scaling() {
           "p = " + fix(p));
 }
 
+void test_gummel_sweeps_tighten_continuity() {
+    std::cout << "\nPredictor consistency across Gummel sweeps\n";
+
+    // The predictor is rho^n - dt div(J^{n+1}), with J refined each sweep, so
+    // more sweeps should tighten continuity. Starting it from the iterate
+    // instead of rho^n changes nothing on the first sweep, when the two are
+    // equal, and counts the step's transport twice on every later one. That
+    // leaves the balances and orders above intact but doubles this error, so
+    // comparing against one sweep catches it. Measured 1.64e-2 with one sweep
+    // and 1.03e-2 with three; from the iterate, 3.33e-2 with three.
+    auto spread_with = [](int sweeps) {
+        ccp::DischargeConfig config = test_config();
+        config.gummel_iterations = sweeps;
+        ccp::DischargeSolver solver(config);
+        double time = 0.0;
+        ccp::verify::advance_cycles(solver, time, 20);
+        return ccp::verify::current_continuity_over_cycle(solver, time).mean_spread;
+    };
+    const double one = spread_with(1);
+    const double three = spread_with(3);
+    check(three < 0.8 * one, "Gummel sweeps reduce the continuity error",
+          "1 sweep " + sci(one) + ", 3 sweeps " + sci(three));
+}
+
 }  // namespace
 
 int main() {
@@ -310,6 +336,7 @@ int main() {
     test_driven_symmetry();
     test_convergence_order();
     test_current_continuity_scaling();
+    test_gummel_sweeps_tighten_continuity();
 
     std::cout << "\n" << (failures == 0 ? "all tests passed" : "FAILURES: ")
               << (failures == 0 ? "" : std::to_string(failures)) << "\n";

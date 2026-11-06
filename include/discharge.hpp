@@ -17,9 +17,10 @@ namespace ccp {
 struct DischargeConfig {
     std::size_t num_cells = 200;
     double gap_length = 0.02;            // m, electrode separation
-    /// 1 Torr. Below roughly 300 mTorr in a 20 mm gap the electron mean free
-    /// path approaches the gap width and the drift-diffusion closure stops
-    /// being defensible -- see the validity note in the README.
+    /// 1 Torr. Below a few hundred mTorr in a 20 mm gap the drift cap sets
+    /// electron transport across most of the gap and the rate fits are far
+    /// outside their range, so the drift-diffusion closure stops being
+    /// defensible -- see the validity note in the README.
     double pressure_mtorr = 1000.0;
     double gas_temperature_k = 300.0;
 
@@ -56,7 +57,7 @@ struct DischargeConfig {
     ///
     /// This is not a passive guard. At the defaults it binds on about 28% of
     /// interior faces over a cycle and removing it changes the absorbed power
-    /// by roughly 25%, so the capped region is modelled as free-streaming at
+    /// by roughly 20%, so the capped region is modelled as free-streaming at
     /// v_th. CycleDiagnostics::drift_cap_duty reports how much it is doing.
     double drift_speed_limit_factor = 1.0;
 
@@ -144,6 +145,11 @@ public:
 
     /// Advance a single timestep. `time` is the time at the start of the step.
     void step(double time);
+
+    /// Throw std::runtime_error naming `cycle` if the state is not finite. A
+    /// NaN spreads through every field within a step, and run() calls this
+    /// after each cycle; a caller stepping by hand should do the same.
+    void require_finite(int cycle) const;
 
     double timestep() const noexcept { return dt_; }
     const Grid& grid() const noexcept { return grid_; }

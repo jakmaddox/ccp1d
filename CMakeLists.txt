@@ -45,3 +45,15 @@ add_executable(test_conservation tests/test_conservation.cpp)
 target_link_libraries(test_conservation PRIVATE ccp1d_core)
 add_test(NAME conservation COMMAND test_conservation)
 set_tests_properties(conservation PROPERTIES TIMEOUT 300)
+
+# --cycles 1 sends the benchmark straight to the cycle it steps by hand, which
+# run() does not check for it.
+add_test(NAME ccp1d_divergence_exit COMMAND ${CMAKE_COMMAND}
+    -DPROGRAM=$<TARGET_FILE:ccp1d> -DCYCLES=3 -DEXTRA=--quiet
+    -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/expect_divergence.cmake)
+add_test(NAME benchmark_divergence_exit COMMAND ${CMAKE_COMMAND}
+    -DPROGRAM=$<TARGET_FILE:ccp1d_benchmark> -DCYCLES=3
+    -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/expect_divergence.cmake)
+add_test(NAME benchmark_last_cycle_divergence_exit COMMAND ${CMAKE_COMMAND}
+    -DPROGRAM=$<TARGET_FILE:ccp1d_benchmark> -DCYCLES=1
+    -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/expect_divergence.cmake)

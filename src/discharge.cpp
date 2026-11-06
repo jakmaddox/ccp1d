@@ -168,9 +168,9 @@ void DischargeSolver::compute_effective_permittivity() {
         const double sigma = kE * (mu_i_eff * ni_f + mu_e_eff * ne_f);
         eps_face_[f] = config_.semi_implicit_poisson ? kEps0 + dt_ * sigma : kEps0;
 
-        // Diffusive conduction current, evaluated at the old densities. Only
-        // the drift part was absorbed into eps_eff, so this remainder stays on
-        // the right-hand side.
+        // Diffusive conduction current, evaluated at the current iterate like
+        // the rest of J^{n+1}. Only the drift part was absorbed into eps_eff,
+        // so this remainder stays on the right-hand side.
         if (f == 0 || f == n) {
             jdiff_face_[f] = 0.0;
         } else {
@@ -193,8 +193,12 @@ void DischargeSolver::solve_poisson(double applied_voltage) {
         const double eps_left = eps_face_[i] / dx2;
         const double eps_right = eps_face_[i + 1] / dx2;
 
-        double rho = kE * (ni_[i] - ne_[i]);
-        if (config_.semi_implicit_poisson) {
+        // The predictor advances rho^n, not the iterate: after the first sweep
+        // the iterate already holds this step's transport, and starting from
+        // it would count that transport twice.
+        const bool predictor = config_.semi_implicit_poisson;
+        double rho = predictor ? kE * (ni_old_[i] - ne_old_[i]) : kE * (ni_[i] - ne_[i]);
+        if (predictor) {
             rho -= dt_ * (jdiff_face_[i + 1] - jdiff_face_[i]) / dx;
         }
 
@@ -554,6 +558,21 @@ void DischargeSolver::step(double time) {
     compute_ion_fluxes();
 }
 
+void DischargeSolver::require_finite(int cycle) const {
+    auto check = [&](const std::vector<double>& field, const char* name) {
+        const auto bad = std::find_if(field.begin(), field.end(),
+                                      [](double value) { return !std::isfinite(value); });
+        if (bad == field.end()) return;
+        throw std::runtime_error("solution diverged in cycle " + std::to_string(cycle) +
+                                 ": " + name + " is not finite at cell " +
+                                 std::to_string(bad - field.begin()));
+    };
+    check(ne_, "n_e");
+    check(ni_, "n_i");
+    check(neps_, "n_eps");
+    check(phi_, "the potential");
+}
+
 CycleDiagnostics DischargeSolver::run(bool verbose) {
     const std::size_t n = grid_.num_cells();
     const double dx = grid_.dx();
@@ -632,6 +651,8 @@ CycleDiagnostics DischargeSolver::run(bool verbose) {
                 ++cap_evals;
             }
         }
+
+        require_finite(cycle);
 
         const double mean_ne = ne_accum * inv_steps;
         const double drift =

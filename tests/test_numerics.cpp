@@ -300,6 +300,34 @@ void test_transport_table() {
           "a negative rate is rejected");
 }
 
+void test_divergence_stops_the_run() {
+    std::cout << "\nDivergence detection\n";
+
+    // Explicit Poisson on a dense seed breaks the dielectric relaxation limit
+    // at once. NaN compares false with everything, so without a check the run
+    // finishes normally and reports a drift cap duty of zero.
+    ccp::DischargeConfig config;
+    config.num_cells = 50;
+    config.num_cycles = 2;
+    config.semi_implicit_poisson = false;
+    ccp::DischargeSolver unstable(config);
+    unstable.seed_uniform(1.0e17, 1.0e17, 4.0);
+    std::string message;
+    try {
+        unstable.run(false);
+    } catch (const std::runtime_error& error) {
+        message = error.what();
+    }
+    check(message.find("diverged in cycle 0") != std::string::npos,
+          "a diverged run throws and names the cycle");
+
+    config.semi_implicit_poisson = true;
+    ccp::DischargeSolver stable(config);
+    stable.run(false);
+    stable.require_finite(config.num_cycles);
+    check(true, "a healthy run passes the finite check");
+}
+
 }  // namespace
 
 int main() {
@@ -311,6 +339,7 @@ int main() {
     test_poisson_operator();
     test_gas_properties();
     test_transport_table();
+    test_divergence_stops_the_run();
 
     std::cout << "\n" << (failures == 0 ? "all tests passed" : "FAILURES: ")
               << (failures == 0 ? "" : std::to_string(failures)) << "\n";
