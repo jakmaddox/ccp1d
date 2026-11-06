@@ -10,3 +10,4 @@ __pycache__/
 .idea/
 .DS_Store
 *.table
+argon_cross_sections.txt
